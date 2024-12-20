@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2010-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP
+ * Copyright 2017-2019,2023 NXP
  *
  */
 #include <inttypes.h>
-#include <of.h>
+#include <dpaa_of.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
-#include <error.h>
+#include <err.h>
 #include <net/if_arp.h>
 #include <assert.h>
 #include <unistd.h>
@@ -29,44 +29,43 @@ static int skfd = -1;
 
 #ifdef RTE_LIBRTE_DPAA_DEBUG_DRIVER
 void
-dump_netcfg(struct netcfg_info *cfg_ptr)
+dump_netcfg(struct netcfg_info *cfg_ptr, FILE *f)
 {
 	int i;
 
-	printf("..........  DPAA Configuration  ..........\n\n");
+	fprintf(f, "..........  DPAA Configuration  ..........\n\n");
 
 	/* Network interfaces */
-	printf("Network interfaces: %d\n", cfg_ptr->num_ethports);
+	fprintf(f, "Network interfaces: %d\n", cfg_ptr->num_ethports);
 	for (i = 0; i < cfg_ptr->num_ethports; i++) {
 		struct fman_if_bpool *bpool;
 		struct fm_eth_port_cfg *p_cfg = &cfg_ptr->port_cfg[i];
 		struct fman_if *__if = p_cfg->fman_if;
 
-		printf("\n+ Fman %d, MAC %d (%s);\n",
+		fprintf(f, "\n+ Fman %d, MAC %d (%s);\n",
 		       __if->fman_idx, __if->mac_idx,
-		       (__if->mac_type == fman_mac_1g) ? "1G" : "10G");
+		       (__if->mac_type == fman_offline_internal) ? "OFFLINE" :
+		       (__if->mac_type == fman_mac_1g) ? "1G" :
+		       (__if->mac_type == fman_mac_2_5g) ? "2.5G" : "10G");
 
-		printf("\tmac_addr: %02x:%02x:%02x:%02x:%02x:%02x\n",
-		       (&__if->mac_addr)->addr_bytes[0],
-		       (&__if->mac_addr)->addr_bytes[1],
-		       (&__if->mac_addr)->addr_bytes[2],
-		       (&__if->mac_addr)->addr_bytes[3],
-		       (&__if->mac_addr)->addr_bytes[4],
-		       (&__if->mac_addr)->addr_bytes[5]);
+		fprintf(f, "\tmac_addr: " RTE_ETHER_ADDR_PRT_FMT "\n",
+		       RTE_ETHER_ADDR_BYTES(&__if->mac_addr));
 
-		printf("\ttx_channel_id: 0x%02x\n",
+		fprintf(f, "\ttx_channel_id: 0x%02x\n",
 		       __if->tx_channel_id);
 
-		printf("\tfqid_rx_def: 0x%x\n", p_cfg->rx_def);
-		printf("\tfqid_rx_err: 0x%x\n", __if->fqid_rx_err);
+		fprintf(f, "\tfqid_rx_def: 0x%x\n", p_cfg->rx_def);
+		fprintf(f, "\tfqid_rx_err: 0x%x\n", __if->fqid_rx_err);
 
-		printf("\tfqid_tx_err: 0x%x\n", __if->fqid_tx_err);
-		printf("\tfqid_tx_confirm: 0x%x\n", __if->fqid_tx_confirm);
-		fman_if_for_each_bpool(bpool, __if)
-			printf("\tbuffer pool: (bpid=%d, count=%"PRId64
-			       " size=%"PRId64", addr=0x%"PRIx64")\n",
-			       bpool->bpid, bpool->count, bpool->size,
-			       bpool->addr);
+		if (__if->mac_type != fman_offline_internal) {
+			fprintf(f, "\tfqid_tx_err: 0x%x\n", __if->fqid_tx_err);
+			fprintf(f, "\tfqid_tx_confirm: 0x%x\n", __if->fqid_tx_confirm);
+			fman_if_for_each_bpool(bpool, __if)
+				fprintf(f, "\tbuffer pool: (bpid=%d, count=%"PRId64
+				       " size=%"PRId64", addr=0x%"PRIx64")\n",
+				       bpool->bpid, bpool->count, bpool->size,
+				       bpool->addr);
+		}
 	}
 }
 #endif /* RTE_LIBRTE_DPAA_DEBUG_DRIVER */
@@ -89,7 +88,7 @@ netcfg_acquire(void)
 	 */
 	skfd = socket(AF_PACKET, SOCK_RAW, 0);
 	if (unlikely(skfd < 0)) {
-		error(0, errno, "%s(): open(SOCK_RAW)", __func__);
+		err(0, "%s(): open(SOCK_RAW)", __func__);
 		return NULL;
 	}
 
@@ -114,7 +113,7 @@ netcfg_acquire(void)
 	size = sizeof(*netcfg) +
 		(num_ports * sizeof(struct fm_eth_port_cfg));
 
-	netcfg = calloc(1, size);
+	netcfg = rte_calloc(NULL, 1, size, 0);
 	if (unlikely(netcfg == NULL)) {
 		DPAA_BUS_LOG(ERR, "Unable to allocat mem for netcfg");
 		goto error;
@@ -141,7 +140,7 @@ netcfg_acquire(void)
 
 error:
 	if (netcfg) {
-		free(netcfg);
+		rte_free(netcfg);
 		netcfg = NULL;
 	}
 
@@ -151,7 +150,7 @@ error:
 void
 netcfg_release(struct netcfg_info *cfg_ptr)
 {
-	free(cfg_ptr);
+	rte_free(cfg_ptr);
 	/* Close socket for shared interfaces */
 	if (skfd >= 0) {
 		close(skfd);

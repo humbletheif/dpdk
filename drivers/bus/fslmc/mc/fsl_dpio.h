@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
- * Copyright 2016-2017 NXP
+ * Copyright 2016-2023 NXP
  *
  */
 #ifndef __FSL_DPIO_H
 #define __FSL_DPIO_H
+
+#include <rte_compat.h>
 
 /* Data Path I/O Portal API
  * Contains initialization APIs and runtime control APIs for DPIO
@@ -13,11 +15,13 @@
 
 struct fsl_mc_io;
 
+__rte_internal
 int dpio_open(struct fsl_mc_io *mc_io,
 	      uint32_t cmd_flags,
 	      int dpio_id,
 	      uint16_t *token);
 
+__rte_internal
 int dpio_close(struct fsl_mc_io *mc_io,
 	       uint32_t cmd_flags,
 	       uint16_t token);
@@ -57,10 +61,12 @@ int dpio_destroy(struct fsl_mc_io *mc_io,
 		 uint32_t cmd_flags,
 		 uint32_t object_id);
 
+__rte_internal
 int dpio_enable(struct fsl_mc_io *mc_io,
 		uint32_t cmd_flags,
 		uint16_t token);
 
+__rte_internal
 int dpio_disable(struct fsl_mc_io *mc_io,
 		 uint32_t cmd_flags,
 		 uint16_t token);
@@ -70,26 +76,49 @@ int dpio_is_enabled(struct fsl_mc_io *mc_io,
 		    uint16_t token,
 		    int *en);
 
+__rte_internal
 int dpio_reset(struct fsl_mc_io *mc_io,
 	       uint32_t cmd_flags,
 	       uint16_t token);
 
+__rte_internal
 int dpio_set_stashing_destination(struct fsl_mc_io *mc_io,
 				  uint32_t cmd_flags,
 				  uint16_t token,
 				  uint8_t sdest);
 
+__rte_internal
 int dpio_get_stashing_destination(struct fsl_mc_io *mc_io,
 				  uint32_t cmd_flags,
 				  uint16_t token,
 				  uint8_t *sdest);
 
+__rte_internal
+int dpio_set_stashing_destination_by_core_id(struct fsl_mc_io *mc_io,
+				  uint32_t cmd_flags,
+				  uint16_t token,
+				  uint8_t core_id);
+
+__rte_internal
+int dpio_set_stashing_destination_source(struct fsl_mc_io *mc_io,
+				  uint32_t cmd_flags,
+				  uint16_t token,
+				  uint8_t ss);
+
+__rte_internal
+int dpio_get_stashing_destination_source(struct fsl_mc_io *mc_io,
+				  uint32_t cmd_flags,
+				  uint16_t token,
+				  uint8_t *ss);
+
+__rte_internal
 int dpio_add_static_dequeue_channel(struct fsl_mc_io *mc_io,
 				    uint32_t cmd_flags,
 				    uint16_t token,
 				    int dpcon_id,
 				    uint8_t *channel_index);
 
+__rte_internal
 int dpio_remove_static_dequeue_channel(struct fsl_mc_io *mc_io,
 				       uint32_t cmd_flags,
 				       uint16_t token,
@@ -119,6 +148,7 @@ struct dpio_attr {
 	uint32_t clk;
 };
 
+__rte_internal
 int dpio_get_attributes(struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
 			uint16_t token,

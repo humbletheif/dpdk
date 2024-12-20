@@ -10,10 +10,10 @@
 #if defined(LINUX)
 #include <sys/epoll.h>
 #endif
+#include <stdlib.h>
 #include <unistd.h>
 
 #include <rte_alarm.h>
-#include <rte_config.h>
 #include <rte_errno.h>
 #include <rte_ethdev.h>
 #include <rte_interrupts.h>
@@ -133,8 +133,8 @@ fs_rx_event_proxy_service_install(struct fs_priv *priv)
 	/* prepare service info */
 	memset(&service, 0, sizeof(struct rte_service_spec));
 	snprintf(service.name, sizeof(service.name), "%s_Rx_service",
-		 priv->dev->data->name);
-	service.socket_id = priv->dev->data->numa_node;
+		 priv->data->name);
+	service.socket_id = priv->data->numa_node;
 	service.callback = fs_rx_event_proxy_routine;
 	service.callback_userdata = priv;
 
@@ -173,17 +173,17 @@ fs_rx_event_proxy_service_install(struct fs_priv *priv)
 		/* run the service */
 		ret = rte_service_component_runstate_set(priv->rxp.sid, 1);
 		if (ret < 0) {
-			ERROR("Failed Setting component runstate\n");
+			ERROR("Failed Setting component runstate");
 			return ret;
 		}
 		ret = rte_service_set_stats_enable(priv->rxp.sid, 1);
 		if (ret < 0) {
-			ERROR("Failed enabling stats\n");
+			ERROR("Failed enabling stats");
 			return ret;
 		}
 		ret = rte_service_runstate_set(priv->rxp.sid, 1);
 		if (ret < 0) {
-			ERROR("Failed to run service\n");
+			ERROR("Failed to run service");
 			return ret;
 		}
 		priv->rxp.sstate = SS_READY;
@@ -274,14 +274,14 @@ failsafe_eth_rx_intr_ctl_subdevice(struct sub_device *sdev, int op)
 	int rc;
 	int ret = 0;
 
+	fsdev = fs_dev(sdev);
 	if (sdev == NULL || (ETH(sdev) == NULL) ||
-	    sdev->fs_dev == NULL || (PRIV(sdev->fs_dev) == NULL)) {
+		fsdev == NULL || (PRIV(fsdev) == NULL)) {
 		ERROR("Called with invalid arguments");
 		return -EINVAL;
 	}
 	dev = ETH(sdev);
-	fsdev = sdev->fs_dev;
-	epfd = PRIV(sdev->fs_dev)->rxp.efd;
+	epfd = PRIV(fsdev)->rxp.efd;
 	pid = PORT_ID(sdev);
 
 	if (epfd <= 0) {
@@ -327,10 +327,10 @@ int failsafe_rx_intr_install_subdevice(struct sub_device *sdev)
 	int qid;
 	struct rte_eth_dev *fsdev;
 	struct rxq **rxq;
-	const struct rte_intr_conf *const intr_conf =
+	const struct rte_eth_intr_conf *const intr_conf =
 				&ETH(sdev)->data->dev_conf.intr_conf;
 
-	fsdev = sdev->fs_dev;
+	fsdev = fs_dev(sdev);
 	rxq = (struct rxq **)fsdev->data->rx_queues;
 	if (intr_conf->rxq == 0)
 		return 0;
@@ -368,7 +368,7 @@ void failsafe_rx_intr_uninstall_subdevice(struct sub_device *sdev)
 	struct rte_eth_dev *fsdev;
 	struct rxq *fsrxq;
 
-	fsdev = sdev->fs_dev;
+	fsdev = fs_dev(sdev);
 	for (qid = 0; qid < ETH(sdev)->data->nb_rx_queues; qid++) {
 		if (qid < fsdev->data->nb_rx_queues) {
 			fsrxq = fsdev->data->rx_queues[qid];
@@ -394,7 +394,7 @@ fs_rx_event_proxy_uninstall(struct fs_priv *priv)
 		free(priv->rxp.evec);
 		priv->rxp.evec = NULL;
 	}
-	if (priv->rxp.efd > 0) {
+	if (priv->rxp.efd >= 0) {
 		close(priv->rxp.efd);
 		priv->rxp.efd = -1;
 	}
@@ -411,12 +411,10 @@ fs_rx_intr_vec_uninstall(struct fs_priv *priv)
 {
 	struct rte_intr_handle *intr_handle;
 
-	intr_handle = &priv->intr_handle;
-	if (intr_handle->intr_vec != NULL) {
-		free(intr_handle->intr_vec);
-		intr_handle->intr_vec = NULL;
-	}
-	intr_handle->nb_efd = 0;
+	intr_handle = priv->intr_handle;
+	rte_intr_vec_list_free(intr_handle);
+
+	rte_intr_nb_efd_set(intr_handle, 0);
 }
 
 /**
@@ -437,14 +435,12 @@ fs_rx_intr_vec_install(struct fs_priv *priv)
 	unsigned int count;
 	struct rte_intr_handle *intr_handle;
 
-	rxqs_n = priv->dev->data->nb_rx_queues;
+	rxqs_n = priv->data->nb_rx_queues;
 	n = RTE_MIN(rxqs_n, (uint32_t)RTE_MAX_RXTX_INTR_VEC_ID);
 	count = 0;
-	intr_handle = &priv->intr_handle;
-	RTE_ASSERT(intr_handle->intr_vec == NULL);
+	intr_handle = priv->intr_handle;
 	/* Allocate the interrupt vector of the failsafe Rx proxy interrupts */
-	intr_handle->intr_vec = malloc(n * sizeof(intr_handle->intr_vec[0]));
-	if (intr_handle->intr_vec == NULL) {
+	if (rte_intr_vec_list_alloc(intr_handle, NULL, n)) {
 		fs_rx_intr_vec_uninstall(priv);
 		rte_errno = ENOMEM;
 		ERROR("Failed to allocate memory for interrupt vector,"
@@ -452,14 +448,14 @@ fs_rx_intr_vec_install(struct fs_priv *priv)
 		return -rte_errno;
 	}
 	for (i = 0; i < n; i++) {
-		struct rxq *rxq = priv->dev->data->rx_queues[i];
+		struct rxq *rxq = priv->data->rx_queues[i];
 
 		/* Skip queues that cannot request interrupts. */
 		if (rxq == NULL || rxq->event_fd < 0) {
 			/* Use invalid intr_vec[] index to disable entry. */
-			intr_handle->intr_vec[i] =
-				RTE_INTR_VEC_RXTX_OFFSET +
-				RTE_MAX_RXTX_INTR_VEC_ID;
+			if (rte_intr_vec_list_index_set(intr_handle, i,
+			RTE_INTR_VEC_RXTX_OFFSET + RTE_MAX_RXTX_INTR_VEC_ID))
+				return -rte_errno;
 			continue;
 		}
 		if (count >= RTE_MAX_RXTX_INTR_VEC_ID) {
@@ -470,15 +466,24 @@ fs_rx_intr_vec_install(struct fs_priv *priv)
 			fs_rx_intr_vec_uninstall(priv);
 			return -rte_errno;
 		}
-		intr_handle->intr_vec[i] = RTE_INTR_VEC_RXTX_OFFSET + count;
-		intr_handle->efds[count] = rxq->event_fd;
+		if (rte_intr_vec_list_index_set(intr_handle, i,
+					RTE_INTR_VEC_RXTX_OFFSET + count))
+			return -rte_errno;
+
+		if (rte_intr_efds_index_set(intr_handle, count,
+						   rxq->event_fd))
+			return -rte_errno;
 		count++;
 	}
 	if (count == 0) {
 		fs_rx_intr_vec_uninstall(priv);
 	} else {
-		intr_handle->nb_efd = count;
-		intr_handle->efd_counter_size = sizeof(uint64_t);
+		if (rte_intr_nb_efd_set(intr_handle, count))
+			return -rte_errno;
+
+		if (rte_intr_efd_counter_size_set(intr_handle,
+				sizeof(uint64_t)))
+			return -rte_errno;
 	}
 	return 0;
 }
@@ -500,7 +505,7 @@ failsafe_rx_intr_uninstall(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle;
 
 	priv = PRIV(dev);
-	intr_handle = &priv->intr_handle;
+	intr_handle = priv->intr_handle;
 	rte_intr_free_epoll_fd(intr_handle);
 	fs_rx_event_proxy_uninstall(priv);
 	fs_rx_intr_vec_uninstall(priv);
@@ -520,8 +525,8 @@ int
 failsafe_rx_intr_install(struct rte_eth_dev *dev)
 {
 	struct fs_priv *priv = PRIV(dev);
-	const struct rte_intr_conf *const intr_conf =
-			&priv->dev->data->dev_conf.intr_conf;
+	const struct rte_eth_intr_conf *const intr_conf =
+			&priv->data->dev_conf.intr_conf;
 
 	if (intr_conf->rxq == 0 || dev->intr_handle != NULL)
 		return 0;
@@ -531,6 +536,6 @@ failsafe_rx_intr_install(struct rte_eth_dev *dev)
 		fs_rx_intr_vec_uninstall(priv);
 		return -rte_errno;
 	}
-	dev->intr_handle = &priv->intr_handle;
+	dev->intr_handle = priv->intr_handle;
 	return 0;
 }

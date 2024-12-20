@@ -366,7 +366,8 @@ test_bbdev_configure_stop_queue(void)
 	 * - queue should be started if deferred_start ==
 	 */
 	ts_params->qconf.deferred_start = 0;
-	rte_bbdev_queue_configure(dev_id, queue_id, &ts_params->qconf);
+	TEST_ASSERT_SUCCESS(rte_bbdev_queue_configure(dev_id, queue_id, &ts_params->qconf),
+			"Failed test for rte_bbdev_queue_configure");
 	rte_bbdev_start(dev_id);
 
 	TEST_ASSERT_SUCCESS(return_value = rte_bbdev_queue_info_get(dev_id,
@@ -521,7 +522,7 @@ test_bbdev_op_pool(void)
 	rte_mempool_free(mp);
 
 	TEST_ASSERT((mp = rte_bbdev_op_pool_create("Test_INV",
-			RTE_BBDEV_OP_TYPE_COUNT, size, cache_size, 0)) == NULL,
+			RTE_BBDEV_OP_TYPE_SIZE_MAX, size, cache_size, 0)) == NULL,
 			"Failed test for rte_bbdev_op_pool_create: "
 			"returned value is not NULL for invalid type");
 
@@ -768,7 +769,7 @@ test_bbdev_driver_init(void)
 {
 	struct rte_bbdev *dev1, *dev2;
 	const char *name = "dev_name";
-	char name_tmp[16];
+	char name_tmp[32];
 	int num_devs, num_devs_tmp;
 
 	dev1 = rte_bbdev_allocate(NULL);
@@ -1238,7 +1239,6 @@ test_bbdev_invalid_driver(void)
 	TEST_ASSERT_SUCCESS(rte_bbdev_callback_unregister(dev_id,
 			RTE_BBDEV_EVENT_UNKNOWN, event_callback, NULL),
 			"Failed to unregister RTE_BBDEV_EVENT_ERROR ");
-	dev2->dev_ops = dev1.dev_ops;
 
 	/* Tests for rte_bbdev_stats_reset */
 	dev2->dev_ops = NULL;

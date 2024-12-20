@@ -3,6 +3,7 @@
  * Copyright 2007 Nuova Systems, Inc.  All rights reserved.
  */
 
+#include <rte_memzone.h>
 #include "vnic_dev.h"
 #include "vnic_rq.h"
 
@@ -21,11 +22,12 @@ int vnic_rq_alloc(struct vnic_dev *vdev, struct vnic_rq *rq, unsigned int index,
 	unsigned int desc_count, unsigned int desc_size)
 {
 	int rc;
-	char res_name[NAME_MAX];
+	char res_name[RTE_MEMZONE_NAMESIZE];
 	static int instance;
 
 	rq->index = index;
 	rq->vdev = vdev;
+	rq->admin_chan = false;
 
 	rq->ctrl = vnic_dev_get_res(vdev, RES_TYPE_RQ, index);
 	if (!rq->ctrl) {
@@ -41,15 +43,41 @@ int vnic_rq_alloc(struct vnic_dev *vdev, struct vnic_rq *rq, unsigned int index,
 	return rc;
 }
 
+int vnic_admin_rq_alloc(struct vnic_dev *vdev, struct vnic_rq *rq,
+	unsigned int desc_count, unsigned int desc_size)
+{
+	int rc;
+	char res_name[RTE_MEMZONE_NAMESIZE];
+	static int instance;
+
+	rq->index = 0;
+	rq->vdev = vdev;
+	rq->admin_chan = true;
+	rq->socket_id = SOCKET_ID_ANY;
+
+	rq->ctrl = vnic_dev_get_res(vdev, RES_TYPE_ADMIN_RQ, 0);
+	if (!rq->ctrl) {
+		pr_err("Failed to get admin RQ resource\n");
+		return -EINVAL;
+	}
+
+	vnic_rq_disable(rq);
+
+	snprintf(res_name, sizeof(res_name), "%d-admin-rq", instance++);
+	rc = vnic_dev_alloc_desc_ring(vdev, &rq->ring, desc_count, desc_size,
+		rq->socket_id, res_name);
+	return rc;
+}
+
 void vnic_rq_init_start(struct vnic_rq *rq, unsigned int cq_index,
 	unsigned int fetch_index, unsigned int posted_index,
 	unsigned int error_interrupt_enable,
 	unsigned int error_interrupt_offset)
 {
-	u64 paddr;
+	uint64_t paddr;
 	unsigned int count = rq->ring.desc_count;
 
-	paddr = (u64)rq->ring.base_addr | VNIC_PADDR_TARGET;
+	paddr = (uint64_t)rq->ring.base_addr | VNIC_PADDR_TARGET;
 	writeq(paddr, &rq->ctrl->ring_base);
 	iowrite32(count, &rq->ctrl->ring_size);
 	iowrite32(cq_index, &rq->ctrl->cq_index);
@@ -69,7 +97,7 @@ void vnic_rq_init(struct vnic_rq *rq, unsigned int cq_index,
 	unsigned int error_interrupt_enable,
 	unsigned int error_interrupt_offset)
 {
-	u32 fetch_index = 0;
+	uint32_t fetch_index = 0;
 
 	/* Use current fetch_index as the ring starting point */
 	fetch_index = ioread32(&rq->ctrl->fetch_index);
@@ -109,7 +137,7 @@ int vnic_rq_disable(struct vnic_rq *rq)
 	for (wait = 0; wait < 1000; wait++) {
 		if (!(ioread32(&rq->ctrl->running)))
 			return 0;
-		udelay(10);
+		usleep(10);
 	}
 
 	pr_err("Failed to disable RQ[%d]\n", rq->index);
@@ -121,7 +149,7 @@ void vnic_rq_clean(struct vnic_rq *rq,
 	void (*buf_clean)(struct rte_mbuf **buf))
 {
 	struct rte_mbuf **buf;
-	u32 fetch_index, i;
+	uint32_t fetch_index, i;
 	unsigned int count = rq->ring.desc_count;
 
 	buf = &rq->mbuf_ring[0];

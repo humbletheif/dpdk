@@ -1,10 +1,8 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2016-2017 Intel Corporation.
 
-.. _Efd_Library:
-
-Elastic Flow Distributor Library
-================================
+Elastic Flow Distributor (EFD) Library
+======================================
 
 Introduction
 ------------
@@ -423,6 +421,6 @@ References
 
 1- EFD is based on collaborative research work between Intel and
 Carnegie Mellon University (CMU), interested readers can refer to the paper
-“Scaling Up Clustered Network Appliances with ScaleBricks;” Dong Zhou et al.
+"Scaling Up Clustered Network Appliances with ScaleBricks" Dong Zhou et al.
 at SIGCOMM 2015 (`http://conferences.sigcomm.org/sigcomm/2015/pdf/papers/p241.pdf`)
 for more information.

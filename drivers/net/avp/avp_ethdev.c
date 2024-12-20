@@ -8,21 +8,21 @@
 #include <errno.h>
 #include <unistd.h>
 
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_pci.h>
+#include <ethdev_driver.h>
+#include <ethdev_pci.h>
 #include <rte_memcpy.h>
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_ether.h>
 #include <rte_common.h>
 #include <rte_cycles.h>
 #include <rte_spinlock.h>
 #include <rte_byteorder.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
 #include <rte_io.h>
@@ -32,21 +32,19 @@
 
 #include "avp_logs.h"
 
-int avp_logtype_driver;
-
 static int avp_dev_create(struct rte_pci_device *pci_dev,
 			  struct rte_eth_dev *eth_dev);
 
 static int avp_dev_configure(struct rte_eth_dev *dev);
 static int avp_dev_start(struct rte_eth_dev *dev);
-static void avp_dev_stop(struct rte_eth_dev *dev);
-static void avp_dev_close(struct rte_eth_dev *dev);
-static void avp_dev_info_get(struct rte_eth_dev *dev,
-			     struct rte_eth_dev_info *dev_info);
+static int avp_dev_stop(struct rte_eth_dev *dev);
+static int avp_dev_close(struct rte_eth_dev *dev);
+static int avp_dev_info_get(struct rte_eth_dev *dev,
+			    struct rte_eth_dev_info *dev_info);
 static int avp_vlan_offload_set(struct rte_eth_dev *dev, int mask);
 static int avp_dev_link_update(struct rte_eth_dev *dev, int wait_to_complete);
-static void avp_dev_promiscuous_enable(struct rte_eth_dev *dev);
-static void avp_dev_promiscuous_disable(struct rte_eth_dev *dev);
+static int avp_dev_promiscuous_enable(struct rte_eth_dev *dev);
+static int avp_dev_promiscuous_disable(struct rte_eth_dev *dev);
 
 static int avp_dev_rx_queue_setup(struct rte_eth_dev *dev,
 				  uint16_t rx_queue_id,
@@ -77,18 +75,18 @@ static uint16_t avp_xmit_pkts(void *tx_queue,
 			      struct rte_mbuf **tx_pkts,
 			      uint16_t nb_pkts);
 
-static void avp_dev_rx_queue_release(void *rxq);
-static void avp_dev_tx_queue_release(void *txq);
+static void avp_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+static void avp_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 static int avp_dev_stats_get(struct rte_eth_dev *dev,
 			      struct rte_eth_stats *stats);
-static void avp_dev_stats_reset(struct rte_eth_dev *dev);
+static int avp_dev_stats_reset(struct rte_eth_dev *dev);
 
 
 #define AVP_MAX_RX_BURST 64
 #define AVP_MAX_TX_BURST 64
 #define AVP_MAX_MAC_ADDRS 1
-#define AVP_MIN_RX_BUFSIZE ETHER_MIN_LEN
+#define AVP_MIN_RX_BUFSIZE RTE_ETHER_MIN_LEN
 
 
 /*
@@ -156,10 +154,10 @@ static const struct eth_dev_ops avp_eth_dev_ops = {
  * Defines the AVP device attributes which are attached to an RTE ethernet
  * device
  */
-struct avp_dev {
+struct __rte_cache_aligned avp_dev {
 	uint32_t magic; /**< Memory validation marker */
 	uint64_t device_id; /**< Unique system identifier */
-	struct ether_addr ethaddr; /**< Host specified MAC address */
+	struct rte_ether_addr ethaddr; /**< Host specified MAC address */
 	struct rte_eth_dev_data *dev_data;
 	/**< Back pointer to ethernet device data */
 	volatile uint32_t flags; /**< Device operational flags */
@@ -192,12 +190,12 @@ struct avp_dev {
 	void *sync_addr; /**< Req/Resp Mem address */
 	void *host_mbuf_addr; /**< (host) MBUF pool start address */
 	void *mbuf_addr; /**< MBUF pool start address */
-} __rte_cache_aligned;
+};
 
 /* RTE ethernet private data */
-struct avp_adapter {
+struct __rte_cache_aligned avp_adapter {
 	struct avp_dev avp;
-} __rte_cache_aligned;
+};
 
 
 /* 32-bit MMIO register write */
@@ -242,18 +240,18 @@ avp_dev_process_request(struct avp_dev *avp, struct rte_avp_request *request)
 	unsigned int count;
 	int ret;
 
-	PMD_DRV_LOG(DEBUG, "Sending request %u to host\n", request->req_id);
+	PMD_DRV_LOG_LINE(DEBUG, "Sending request %u to host", request->req_id);
 
 	request->result = -ENOTSUP;
 
 	/* Discard any stale responses before starting a new request */
 	while (avp_fifo_get(avp->resp_q, (void **)&resp_addr, 1))
-		PMD_DRV_LOG(DEBUG, "Discarding stale response\n");
+		PMD_DRV_LOG_LINE(DEBUG, "Discarding stale response");
 
 	rte_memcpy(avp->sync_addr, request, sizeof(*request));
 	count = avp_fifo_put(avp->req_q, &avp->host_sync_addr, 1);
 	if (count < 1) {
-		PMD_DRV_LOG(ERR, "Cannot send request %u to host\n",
+		PMD_DRV_LOG_LINE(ERR, "Cannot send request %u to host",
 			    request->req_id);
 		ret = -EBUSY;
 		goto done;
@@ -269,8 +267,8 @@ avp_dev_process_request(struct avp_dev *avp, struct rte_avp_request *request)
 			break;
 		}
 
-		if ((count < 1) && (retry == 0)) {
-			PMD_DRV_LOG(ERR, "Timeout while waiting for a response for %u\n",
+		if (retry == 0) {
+			PMD_DRV_LOG_LINE(ERR, "Timeout while waiting for a response for %u",
 				    request->req_id);
 			ret = -ETIME;
 			goto done;
@@ -280,7 +278,7 @@ avp_dev_process_request(struct avp_dev *avp, struct rte_avp_request *request)
 	/* retrieve the response */
 	count = avp_fifo_get(avp->resp_q, (void **)&resp_addr, 1);
 	if ((count != 1) || (resp_addr != avp->host_sync_addr)) {
-		PMD_DRV_LOG(ERR, "Invalid response from host, count=%u resp=%p host_sync_addr=%p\n",
+		PMD_DRV_LOG_LINE(ERR, "Invalid response from host, count=%u resp=%p host_sync_addr=%p",
 			    count, resp_addr, avp->host_sync_addr);
 		ret = -ENODATA;
 		goto done;
@@ -290,7 +288,7 @@ avp_dev_process_request(struct avp_dev *avp, struct rte_avp_request *request)
 	rte_memcpy(request, avp->sync_addr, sizeof(*request));
 	ret = 0;
 
-	PMD_DRV_LOG(DEBUG, "Result %d received for request %u\n",
+	PMD_DRV_LOG_LINE(DEBUG, "Result %d received for request %u",
 		    request->result, request->req_id);
 
 done:
@@ -385,7 +383,7 @@ avp_dev_translate_address(struct rte_eth_dev *eth_dev,
 			offset += (host_phys_addr - map->phys_addr);
 			addr = RTE_PTR_ADD(addr, (uintptr_t)offset);
 
-			PMD_DRV_LOG(DEBUG, "Translating host physical 0x%" PRIx64 " to guest virtual 0x%p\n",
+			PMD_DRV_LOG_LINE(DEBUG, "Translating host physical 0x%" PRIx64 " to guest virtual 0x%p",
 				    host_phys_addr, addr);
 
 			return addr;
@@ -427,7 +425,7 @@ avp_dev_check_regions(struct rte_eth_dev *eth_dev)
 		if ((resource->phys_addr == 0) || (resource->len == 0))
 			continue;
 
-		PMD_DRV_LOG(DEBUG, "resource[%u]: phys=0x%" PRIx64 " len=%" PRIu64 " addr=%p\n",
+		PMD_DRV_LOG_LINE(DEBUG, "resource[%u]: phys=0x%" PRIx64 " len=%" PRIu64 " addr=%p",
 			    i, resource->phys_addr,
 			    resource->len, resource->addr);
 
@@ -436,7 +434,7 @@ avp_dev_check_regions(struct rte_eth_dev *eth_dev)
 			memmap = (struct rte_avp_memmap_info *)resource->addr;
 			if ((memmap->magic != RTE_AVP_MEMMAP_MAGIC) ||
 			    (memmap->version != RTE_AVP_MEMMAP_VERSION)) {
-				PMD_DRV_LOG(ERR, "Invalid memmap magic 0x%08x and version %u\n",
+				PMD_DRV_LOG_LINE(ERR, "Invalid memmap magic 0x%08x and version %u",
 					    memmap->magic, memmap->version);
 				return -EINVAL;
 			}
@@ -446,7 +444,7 @@ avp_dev_check_regions(struct rte_eth_dev *eth_dev)
 			info = (struct rte_avp_device_info *)resource->addr;
 			if ((info->magic != RTE_AVP_DEVICE_MAGIC) ||
 			    avp_dev_version_check(info->version)) {
-				PMD_DRV_LOG(ERR, "Invalid device info magic 0x%08x or version 0x%08x > 0x%08x\n",
+				PMD_DRV_LOG_LINE(ERR, "Invalid device info magic 0x%08x or version 0x%08x > 0x%08x",
 					    info->magic, info->version,
 					    AVP_DPDK_DRIVER_VERSION);
 				return -EINVAL;
@@ -456,7 +454,7 @@ avp_dev_check_regions(struct rte_eth_dev *eth_dev)
 		case RTE_AVP_PCI_MEMORY_BAR:
 		case RTE_AVP_PCI_MMIO_BAR:
 			if (resource->addr == NULL) {
-				PMD_DRV_LOG(ERR, "Missing address space for BAR%u\n",
+				PMD_DRV_LOG_LINE(ERR, "Missing address space for BAR%u",
 					    i);
 				return -EINVAL;
 			}
@@ -478,13 +476,13 @@ avp_dev_detach(struct rte_eth_dev *eth_dev)
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 	int ret;
 
-	PMD_DRV_LOG(NOTICE, "Detaching port %u from AVP device 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(NOTICE, "Detaching port %u from AVP device 0x%" PRIx64 "",
 		    eth_dev->data->port_id, avp->device_id);
 
 	rte_spinlock_lock(&avp->lock);
 
 	if (avp->flags & AVP_F_DETACHED) {
-		PMD_DRV_LOG(NOTICE, "port %u already detached\n",
+		PMD_DRV_LOG_LINE(NOTICE, "port %u already detached",
 			    eth_dev->data->port_id);
 		ret = 0;
 		goto unlock;
@@ -493,7 +491,7 @@ avp_dev_detach(struct rte_eth_dev *eth_dev)
 	/* shutdown the device first so the host stops sending us packets. */
 	ret = avp_dev_ctrl_shutdown(eth_dev);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to send/recv shutdown to host, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Failed to send/recv shutdown to host, ret=%d",
 			    ret);
 		avp->flags &= ~AVP_F_DETACHED;
 		goto unlock;
@@ -542,7 +540,7 @@ _avp_set_rx_queue_mappings(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 		rxq->queue_limit = rxq->queue_base + queue_count - 1;
 	}
 
-	PMD_DRV_LOG(DEBUG, "rxq %u at %p base %u limit %u\n",
+	PMD_DRV_LOG_LINE(DEBUG, "rxq %u at %p base %u limit %u",
 		    rx_queue_id, rxq, rxq->queue_base, rxq->queue_limit);
 
 	rxq->queue_id = rxq->queue_base;
@@ -576,7 +574,7 @@ _avp_set_queue_counts(struct rte_eth_dev *eth_dev)
 	avp->num_rx_queues = RTE_MAX(host_info->min_rx_queues,
 				     eth_dev->data->nb_rx_queues);
 
-	PMD_DRV_LOG(DEBUG, "Requesting %u Tx and %u Rx queues from host\n",
+	PMD_DRV_LOG_LINE(DEBUG, "Requesting %u Tx and %u Rx queues from host",
 		    avp->num_tx_queues, avp->num_rx_queues);
 }
 
@@ -588,13 +586,13 @@ avp_dev_attach(struct rte_eth_dev *eth_dev)
 	unsigned int i;
 	int ret;
 
-	PMD_DRV_LOG(NOTICE, "Attaching port %u to AVP device 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(NOTICE, "Attaching port %u to AVP device 0x%" PRIx64 "",
 		    eth_dev->data->port_id, avp->device_id);
 
 	rte_spinlock_lock(&avp->lock);
 
 	if (!(avp->flags & AVP_F_DETACHED)) {
-		PMD_DRV_LOG(NOTICE, "port %u already attached\n",
+		PMD_DRV_LOG_LINE(NOTICE, "port %u already attached",
 			    eth_dev->data->port_id);
 		ret = 0;
 		goto unlock;
@@ -613,7 +611,7 @@ avp_dev_attach(struct rte_eth_dev *eth_dev)
 	 */
 	ret = avp_dev_create(RTE_ETH_DEV_TO_PCI(eth_dev), eth_dev);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to re-create AVP device, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Failed to re-create AVP device, ret=%d",
 			    ret);
 		goto unlock;
 	}
@@ -645,7 +643,7 @@ avp_dev_attach(struct rte_eth_dev *eth_dev)
 
 		ret = avp_dev_ctrl_set_config(eth_dev, &config);
 		if (ret < 0) {
-			PMD_DRV_LOG(ERR, "Config request failed by host, ret=%d\n",
+			PMD_DRV_LOG_LINE(ERR, "Config request failed by host, ret=%d",
 				    ret);
 			goto unlock;
 		}
@@ -694,7 +692,7 @@ avp_dev_interrupt_handler(void *data)
 			ret = avp_dev_attach(eth_dev);
 			break;
 		default:
-			PMD_DRV_LOG(ERR, "unexpected migration status, status=%u\n",
+			PMD_DRV_LOG_LINE(ERR, "unexpected migration status, status=%u",
 				    value);
 			ret = -EINVAL;
 		}
@@ -705,17 +703,17 @@ avp_dev_interrupt_handler(void *data)
 			    RTE_PTR_ADD(registers,
 					RTE_AVP_MIGRATION_ACK_OFFSET));
 
-		PMD_DRV_LOG(NOTICE, "AVP migration interrupt handled\n");
+		PMD_DRV_LOG_LINE(NOTICE, "AVP migration interrupt handled");
 	}
 
 	if (status & ~RTE_AVP_MIGRATION_INTERRUPT_MASK)
-		PMD_DRV_LOG(WARNING, "AVP unexpected interrupt, status=0x%08x\n",
+		PMD_DRV_LOG_LINE(WARNING, "AVP unexpected interrupt, status=0x%08x",
 			    status);
 
 	/* re-enable UIO interrupt handling */
-	ret = rte_intr_enable(&pci_dev->intr_handle);
+	ret = rte_intr_ack(pci_dev->intr_handle);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to re-enable UIO interrupts, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Failed to re-enable UIO interrupts, ret=%d",
 			    ret);
 		/* continue */
 	}
@@ -732,9 +730,9 @@ avp_dev_enable_interrupts(struct rte_eth_dev *eth_dev)
 		return -EINVAL;
 
 	/* enable UIO interrupt handling */
-	ret = rte_intr_enable(&pci_dev->intr_handle);
+	ret = rte_intr_enable(pci_dev->intr_handle);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to enable UIO interrupts, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Failed to enable UIO interrupts, ret=%d",
 			    ret);
 		return ret;
 	}
@@ -761,9 +759,9 @@ avp_dev_disable_interrupts(struct rte_eth_dev *eth_dev)
 		    RTE_PTR_ADD(registers, RTE_AVP_INTERRUPT_MASK_OFFSET));
 
 	/* enable UIO interrupt handling */
-	ret = rte_intr_disable(&pci_dev->intr_handle);
+	ret = rte_intr_disable(pci_dev->intr_handle);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to disable UIO interrupts, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Failed to disable UIO interrupts, ret=%d",
 			    ret);
 		return ret;
 	}
@@ -778,11 +776,11 @@ avp_dev_setup_interrupts(struct rte_eth_dev *eth_dev)
 	int ret;
 
 	/* register a callback handler with UIO for interrupt notifications */
-	ret = rte_intr_callback_register(&pci_dev->intr_handle,
+	ret = rte_intr_callback_register(pci_dev->intr_handle,
 					 avp_dev_interrupt_handler,
 					 (void *)eth_dev);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to register UIO interrupt callback, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Failed to register UIO interrupt callback, ret=%d",
 			    ret);
 		return ret;
 	}
@@ -828,7 +826,7 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 
 	resource = &pci_dev->mem_resource[RTE_AVP_PCI_DEVICE_BAR];
 	if (resource->addr == NULL) {
-		PMD_DRV_LOG(ERR, "BAR%u is not mapped\n",
+		PMD_DRV_LOG_LINE(ERR, "BAR%u is not mapped",
 			    RTE_AVP_PCI_DEVICE_BAR);
 		return -EFAULT;
 	}
@@ -836,22 +834,22 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 
 	if ((host_info->magic != RTE_AVP_DEVICE_MAGIC) ||
 		avp_dev_version_check(host_info->version)) {
-		PMD_DRV_LOG(ERR, "Invalid AVP PCI device, magic 0x%08x version 0x%08x > 0x%08x\n",
+		PMD_DRV_LOG_LINE(ERR, "Invalid AVP PCI device, magic 0x%08x version 0x%08x > 0x%08x",
 			    host_info->magic, host_info->version,
 			    AVP_DPDK_DRIVER_VERSION);
 		return -EINVAL;
 	}
 
-	PMD_DRV_LOG(DEBUG, "AVP host device is v%u.%u.%u\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host device is v%u.%u.%u",
 		    RTE_AVP_GET_RELEASE_VERSION(host_info->version),
 		    RTE_AVP_GET_MAJOR_VERSION(host_info->version),
 		    RTE_AVP_GET_MINOR_VERSION(host_info->version));
 
-	PMD_DRV_LOG(DEBUG, "AVP host supports %u to %u TX queue(s)\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host supports %u to %u TX queue(s)",
 		    host_info->min_tx_queues, host_info->max_tx_queues);
-	PMD_DRV_LOG(DEBUG, "AVP host supports %u to %u RX queue(s)\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host supports %u to %u RX queue(s)",
 		    host_info->min_rx_queues, host_info->max_rx_queues);
-	PMD_DRV_LOG(DEBUG, "AVP host supports features 0x%08x\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host supports features 0x%08x",
 		    host_info->features);
 
 	if (avp->magic != AVP_ETHDEV_MAGIC) {
@@ -867,7 +865,7 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 		avp->host_features = host_info->features;
 		rte_spinlock_init(&avp->lock);
 		memcpy(&avp->ethaddr.addr_bytes[0],
-		       host_info->ethaddr, ETHER_ADDR_LEN);
+		       host_info->ethaddr, RTE_ETHER_ADDR_LEN);
 		/* adjust max values to not exceed our max */
 		avp->max_tx_queues =
 			RTE_MIN(host_info->max_tx_queues, RTE_AVP_MAX_QUEUES);
@@ -878,7 +876,7 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 
 		/* TODO... requires validation of host values */
 		if ((host_info->features & avp->features) != avp->features) {
-			PMD_DRV_LOG(ERR, "AVP host features mismatched; 0x%08x, host=0x%08x\n",
+			PMD_DRV_LOG_LINE(ERR, "AVP host features mismatched; 0x%08x, host=0x%08x",
 				    avp->features, host_info->features);
 			/* this should not be possible; continue for now */
 		}
@@ -888,9 +886,9 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 	avp->device_id = host_info->device_id;
 
 	/* translate incoming host addresses to guest address space */
-	PMD_DRV_LOG(DEBUG, "AVP first host tx queue at 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP first host tx queue at 0x%" PRIx64 "",
 		    host_info->tx_phys);
-	PMD_DRV_LOG(DEBUG, "AVP first host alloc queue at 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP first host alloc queue at 0x%" PRIx64 "",
 		    host_info->alloc_phys);
 	for (i = 0; i < avp->max_tx_queues; i++) {
 		avp->tx_q[i] = avp_dev_translate_address(eth_dev,
@@ -900,9 +898,9 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 			host_info->alloc_phys + (i * host_info->alloc_size));
 	}
 
-	PMD_DRV_LOG(DEBUG, "AVP first host rx queue at 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP first host rx queue at 0x%" PRIx64 "",
 		    host_info->rx_phys);
-	PMD_DRV_LOG(DEBUG, "AVP first host free queue at 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP first host free queue at 0x%" PRIx64 "",
 		    host_info->free_phys);
 	for (i = 0; i < avp->max_rx_queues; i++) {
 		avp->rx_q[i] = avp_dev_translate_address(eth_dev,
@@ -911,13 +909,13 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 			host_info->free_phys + (i * host_info->free_size));
 	}
 
-	PMD_DRV_LOG(DEBUG, "AVP host request queue at 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host request queue at 0x%" PRIx64 "",
 		    host_info->req_phys);
-	PMD_DRV_LOG(DEBUG, "AVP host response queue at 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host response queue at 0x%" PRIx64 "",
 		    host_info->resp_phys);
-	PMD_DRV_LOG(DEBUG, "AVP host sync address at 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host sync address at 0x%" PRIx64 "",
 		    host_info->sync_phys);
-	PMD_DRV_LOG(DEBUG, "AVP host mbuf address at 0x%" PRIx64 "\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host mbuf address at 0x%" PRIx64 "",
 		    host_info->mbuf_phys);
 	avp->req_q = avp_dev_translate_address(eth_dev, host_info->req_phys);
 	avp->resp_q = avp_dev_translate_address(eth_dev, host_info->resp_phys);
@@ -937,7 +935,7 @@ avp_dev_create(struct rte_pci_device *pci_dev,
 	 * store the maximum packet length that is supported by the host.
 	 */
 	avp->max_rx_pkt_len = host_info->max_rx_pkt_len;
-	PMD_DRV_LOG(DEBUG, "AVP host max receive packet length is %u\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP host max receive packet length is %u",
 				host_info->max_rx_pkt_len);
 
 	return 0;
@@ -968,7 +966,7 @@ eth_avp_dev_init(struct rte_eth_dev *eth_dev)
 		 * be valid.
 		 */
 		if (eth_dev->data->scattered_rx) {
-			PMD_DRV_LOG(NOTICE, "AVP device configured for chained mbufs\n");
+			PMD_DRV_LOG_LINE(NOTICE, "AVP device configured for chained mbufs");
 			eth_dev->rx_pkt_burst = avp_recv_scattered_pkts;
 			eth_dev->tx_pkt_burst = avp_xmit_scattered_pkts;
 		}
@@ -976,17 +974,18 @@ eth_avp_dev_init(struct rte_eth_dev *eth_dev)
 	}
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
+	eth_dev->data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	/* Check current migration status */
 	if (avp_dev_migration_pending(eth_dev)) {
-		PMD_DRV_LOG(ERR, "VM live migration operation in progress\n");
+		PMD_DRV_LOG_LINE(ERR, "VM live migration operation in progress");
 		return -EBUSY;
 	}
 
 	/* Check BAR resources */
 	ret = avp_dev_check_regions(eth_dev);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to validate BAR resources, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Failed to validate BAR resources, ret=%d",
 			    ret);
 		return ret;
 	}
@@ -994,27 +993,28 @@ eth_avp_dev_init(struct rte_eth_dev *eth_dev)
 	/* Enable interrupts */
 	ret = avp_dev_setup_interrupts(eth_dev);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to enable interrupts, ret=%d\n", ret);
+		PMD_DRV_LOG_LINE(ERR, "Failed to enable interrupts, ret=%d", ret);
 		return ret;
 	}
 
 	/* Handle each subtype */
 	ret = avp_dev_create(pci_dev, eth_dev);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to create device, ret=%d\n", ret);
+		PMD_DRV_LOG_LINE(ERR, "Failed to create device, ret=%d", ret);
 		return ret;
 	}
 
 	/* Allocate memory for storing MAC addresses */
-	eth_dev->data->mac_addrs = rte_zmalloc("avp_ethdev", ETHER_ADDR_LEN, 0);
+	eth_dev->data->mac_addrs = rte_zmalloc("avp_ethdev",
+					RTE_ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL) {
-		PMD_DRV_LOG(ERR, "Failed to allocate %d bytes needed to store MAC addresses\n",
-			    ETHER_ADDR_LEN);
+		PMD_DRV_LOG_LINE(ERR, "Failed to allocate %d bytes needed to store MAC addresses",
+			    RTE_ETHER_ADDR_LEN);
 		return -ENOMEM;
 	}
 
 	/* Get a mac from device config */
-	ether_addr_copy(&avp->ethaddr, &eth_dev->data->mac_addrs[0]);
+	rte_ether_addr_copy(&avp->ethaddr, &eth_dev->data->mac_addrs[0]);
 
 	return 0;
 }
@@ -1022,19 +1022,13 @@ eth_avp_dev_init(struct rte_eth_dev *eth_dev)
 static int
 eth_avp_dev_uninit(struct rte_eth_dev *eth_dev)
 {
-	int ret;
-
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
 		return -EPERM;
 
 	if (eth_dev->data == NULL)
 		return 0;
 
-	ret = avp_dev_disable_interrupts(eth_dev);
-	if (ret != 0) {
-		PMD_DRV_LOG(ERR, "Failed to disable interrupts, ret=%d\n", ret);
-		return ret;
-	}
+	avp_dev_close(eth_dev);
 
 	return 0;
 }
@@ -1065,17 +1059,18 @@ static int
 avp_dev_enable_scattered(struct rte_eth_dev *eth_dev,
 			 struct avp_dev *avp)
 {
-	unsigned int max_rx_pkt_len;
+	unsigned int max_rx_pktlen;
 
-	max_rx_pkt_len = eth_dev->data->dev_conf.rxmode.max_rx_pkt_len;
+	max_rx_pktlen = eth_dev->data->mtu + RTE_ETHER_HDR_LEN +
+		RTE_ETHER_CRC_LEN;
 
-	if ((max_rx_pkt_len > avp->guest_mbuf_size) ||
-	    (max_rx_pkt_len > avp->host_mbuf_size)) {
+	if (max_rx_pktlen > avp->guest_mbuf_size ||
+	    max_rx_pktlen > avp->host_mbuf_size) {
 		/*
 		 * If the guest MTU is greater than either the host or guest
 		 * buffers then chained mbufs have to be enabled in the TX
 		 * direction.  It is assumed that the application will not need
-		 * to send packets larger than their max_rx_pkt_len (MRU).
+		 * to send packets larger than their MTU.
 		 */
 		return 1;
 	}
@@ -1106,7 +1101,7 @@ avp_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 	struct avp_queue *rxq;
 
 	if (rx_queue_id >= eth_dev->data->nb_rx_queues) {
-		PMD_DRV_LOG(ERR, "RX queue id is out of range: rx_queue_id=%u, nb_rx_queues=%u\n",
+		PMD_DRV_LOG_LINE(ERR, "RX queue id is out of range: rx_queue_id=%u, nb_rx_queues=%u",
 			    rx_queue_id, eth_dev->data->nb_rx_queues);
 		return -EINVAL;
 	}
@@ -1121,16 +1116,16 @@ avp_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 
 	if (avp_dev_enable_scattered(eth_dev, avp)) {
 		if (!eth_dev->data->scattered_rx) {
-			PMD_DRV_LOG(NOTICE, "AVP device configured for chained mbufs\n");
+			PMD_DRV_LOG_LINE(NOTICE, "AVP device configured for chained mbufs");
 			eth_dev->data->scattered_rx = 1;
 			eth_dev->rx_pkt_burst = avp_recv_scattered_pkts;
 			eth_dev->tx_pkt_burst = avp_xmit_scattered_pkts;
 		}
 	}
 
-	PMD_DRV_LOG(DEBUG, "AVP max_rx_pkt_len=(%u,%u) mbuf_size=(%u,%u)\n",
+	PMD_DRV_LOG_LINE(DEBUG, "AVP max_rx_pkt_len=(%u,%u) mbuf_size=(%u,%u)",
 		    avp->max_rx_pkt_len,
-		    eth_dev->data->dev_conf.rxmode.max_rx_pkt_len,
+		    eth_dev->data->mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN,
 		    avp->host_mbuf_size,
 		    avp->guest_mbuf_size);
 
@@ -1138,7 +1133,7 @@ avp_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 	rxq = rte_zmalloc_socket("ethdev RX queue", sizeof(struct avp_queue),
 				 RTE_CACHE_LINE_SIZE, socket_id);
 	if (rxq == NULL) {
-		PMD_DRV_LOG(ERR, "Failed to allocate new Rx queue object\n");
+		PMD_DRV_LOG_LINE(ERR, "Failed to allocate new Rx queue object");
 		return -ENOMEM;
 	}
 
@@ -1150,7 +1145,7 @@ avp_dev_rx_queue_setup(struct rte_eth_dev *eth_dev,
 	/* setup the queue receive mapping for the current queue. */
 	_avp_set_rx_queue_mappings(eth_dev, rx_queue_id);
 
-	PMD_DRV_LOG(DEBUG, "Rx queue %u setup at %p\n", rx_queue_id, rxq);
+	PMD_DRV_LOG_LINE(DEBUG, "Rx queue %u setup at %p", rx_queue_id, rxq);
 
 	(void)nb_rx_desc;
 	(void)rx_conf;
@@ -1168,7 +1163,7 @@ avp_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 	struct avp_queue *txq;
 
 	if (tx_queue_id >= eth_dev->data->nb_tx_queues) {
-		PMD_DRV_LOG(ERR, "TX queue id is out of range: tx_queue_id=%u, nb_tx_queues=%u\n",
+		PMD_DRV_LOG_LINE(ERR, "TX queue id is out of range: tx_queue_id=%u, nb_tx_queues=%u",
 			    tx_queue_id, eth_dev->data->nb_tx_queues);
 		return -EINVAL;
 	}
@@ -1177,7 +1172,7 @@ avp_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 	txq = rte_zmalloc_socket("ethdev TX queue", sizeof(struct avp_queue),
 				 RTE_CACHE_LINE_SIZE, socket_id);
 	if (txq == NULL) {
-		PMD_DRV_LOG(ERR, "Failed to allocate new Tx queue object\n");
+		PMD_DRV_LOG_LINE(ERR, "Failed to allocate new Tx queue object");
 		return -ENOMEM;
 	}
 
@@ -1191,7 +1186,7 @@ avp_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 	txq->dev_data = eth_dev->data;
 	eth_dev->data->tx_queues[tx_queue_id] = (void *)txq;
 
-	PMD_DRV_LOG(DEBUG, "Tx queue %u setup at %p\n", tx_queue_id, txq);
+	PMD_DRV_LOG_LINE(DEBUG, "Tx queue %u setup at %p", tx_queue_id, txq);
 
 	(void)nb_tx_desc;
 	(void)tx_conf;
@@ -1199,7 +1194,7 @@ avp_dev_tx_queue_setup(struct rte_eth_dev *eth_dev,
 }
 
 static inline int
-_avp_cmp_ether_addr(struct ether_addr *a, struct ether_addr *b)
+_avp_cmp_ether_addr(struct rte_ether_addr *a, struct rte_ether_addr *b)
 {
 	uint16_t *_a = (uint16_t *)&a->addr_bytes[0];
 	uint16_t *_b = (uint16_t *)&b->addr_bytes[0];
@@ -1209,19 +1204,19 @@ _avp_cmp_ether_addr(struct ether_addr *a, struct ether_addr *b)
 static inline int
 _avp_mac_filter(struct avp_dev *avp, struct rte_mbuf *m)
 {
-	struct ether_hdr *eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+	struct rte_ether_hdr *eth = rte_pktmbuf_mtod(m, struct rte_ether_hdr *);
 
-	if (likely(_avp_cmp_ether_addr(&avp->ethaddr, &eth->d_addr) == 0)) {
+	if (likely(_avp_cmp_ether_addr(&avp->ethaddr, &eth->dst_addr) == 0)) {
 		/* allow all packets destined to our address */
 		return 0;
 	}
 
-	if (likely(is_broadcast_ether_addr(&eth->d_addr))) {
+	if (likely(rte_is_broadcast_ether_addr(&eth->dst_addr))) {
 		/* allow all broadcast packets */
 		return 0;
 	}
 
-	if (likely(is_multicast_ether_addr(&eth->d_addr))) {
+	if (likely(rte_is_multicast_ether_addr(&eth->dst_addr))) {
 		/* allow all multicast packets */
 		return 0;
 	}
@@ -1316,7 +1311,7 @@ avp_dev_copy_from_buffers(struct avp_dev *avp,
 	src_offset = 0;
 
 	if (pkt_buf->ol_flags & RTE_AVP_RX_VLAN_PKT) {
-		ol_flags = PKT_RX_VLAN;
+		ol_flags = RTE_MBUF_F_RX_VLAN;
 		vlan_tci = pkt_buf->vlan_tci;
 	} else {
 		ol_flags = 0;
@@ -1433,7 +1428,7 @@ avp_recv_scattered_pkts(void *rx_queue,
 
 	/* retrieve pending packets */
 	n = avp_fifo_get(rx_q, (void **)&avp_bufs, count);
-	PMD_RX_LOG(DEBUG, "Receiving %u packets from Rx queue at %p\n",
+	PMD_RX_LOG_LINE(DEBUG, "Receiving %u packets from Rx queue at %p",
 		   count, rx_q);
 
 	count = 0;
@@ -1530,7 +1525,7 @@ avp_recv_pkts(void *rx_queue,
 
 	/* retrieve pending packets */
 	n = avp_fifo_get(rx_q, (void **)&avp_bufs, count);
-	PMD_RX_LOG(DEBUG, "Receiving %u packets from Rx queue at %p\n",
+	PMD_RX_LOG_LINE(DEBUG, "Receiving %u packets from Rx queue at %p",
 		   count, rx_q);
 
 	count = 0;
@@ -1574,7 +1569,7 @@ avp_recv_pkts(void *rx_queue,
 		m->port = avp->port_id;
 
 		if (pkt_buf->ol_flags & RTE_AVP_RX_VLAN_PKT) {
-			m->ol_flags = PKT_RX_VLAN;
+			m->ol_flags = RTE_MBUF_F_RX_VLAN;
 			m->vlan_tci = pkt_buf->vlan_tci;
 		}
 
@@ -1680,7 +1675,7 @@ avp_dev_copy_to_buffers(struct avp_dev *avp,
 	first_buf->nb_segs = count;
 	first_buf->pkt_len = total_length;
 
-	if (mbuf->ol_flags & PKT_TX_VLAN_PKT) {
+	if (mbuf->ol_flags & RTE_MBUF_F_TX_VLAN) {
 		first_buf->ol_flags |= RTE_AVP_TX_VLAN_PKT;
 		first_buf->vlan_tci = mbuf->vlan_tci;
 	}
@@ -1697,7 +1692,7 @@ avp_xmit_scattered_pkts(void *tx_queue,
 			uint16_t nb_pkts)
 {
 	struct rte_avp_desc *avp_bufs[(AVP_MAX_TX_BURST *
-				       RTE_AVP_MAX_MBUF_SEGMENTS)];
+				       RTE_AVP_MAX_MBUF_SEGMENTS)] = {};
 	struct avp_queue *txq = (struct avp_queue *)tx_queue;
 	struct rte_avp_desc *tx_bufs[AVP_MAX_TX_BURST];
 	struct avp_dev *avp = txq->avp;
@@ -1766,14 +1761,13 @@ avp_xmit_scattered_pkts(void *tx_queue,
 		return 0;
 	}
 
-	PMD_TX_LOG(DEBUG, "Sending %u packets on Tx queue at %p\n",
+	PMD_TX_LOG_LINE(DEBUG, "Sending %u packets on Tx queue at %p",
 		   nb_pkts, tx_q);
 
 	/* retrieve sufficient send buffers */
 	n = avp_fifo_get(alloc_q, (void **)&avp_bufs, segments);
 	if (unlikely(n != segments)) {
-		PMD_TX_LOG(DEBUG, "Failed to allocate buffers "
-			   "n=%u, segments=%u, orig=%u\n",
+		PMD_TX_LOG_LINE(DEBUG, "Failed to allocate buffers n=%u, segments=%u, orig=%u",
 			   n, segments, orig_nb_pkts);
 		txq->errors += orig_nb_pkts;
 		return 0;
@@ -1861,7 +1855,7 @@ avp_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		return 0;
 	}
 
-	PMD_TX_LOG(DEBUG, "Sending %u packets on Tx queue at %p\n",
+	PMD_TX_LOG_LINE(DEBUG, "Sending %u packets on Tx queue at %p",
 		   count, tx_q);
 
 	/* retrieve sufficient send buffers */
@@ -1895,8 +1889,8 @@ avp_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			 * function; send it truncated to avoid the performance
 			 * hit of having to manage returning the already
 			 * allocated buffer to the free list.  This should not
-			 * happen since the application should have set the
-			 * max_rx_pkt_len based on its MTU and it should be
+			 * happen since the application should have not send
+			 * packages larger than its MTU and it should be
 			 * policing its own packet sizes.
 			 */
 			txq->errors++;
@@ -1911,7 +1905,7 @@ avp_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		pkt_buf->nb_segs = 1;
 		pkt_buf->next = NULL;
 
-		if (m->ol_flags & PKT_TX_VLAN_PKT) {
+		if (m->ol_flags & RTE_MBUF_F_TX_VLAN) {
 			pkt_buf->ol_flags |= RTE_AVP_TX_VLAN_PKT;
 			pkt_buf->vlan_tci = m->vlan_tci;
 		}
@@ -1932,30 +1926,50 @@ avp_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 }
 
 static void
-avp_dev_rx_queue_release(void *rx_queue)
+avp_dev_rx_queue_release(struct rte_eth_dev *eth_dev, uint16_t rx_queue_id)
 {
-	struct avp_queue *rxq = (struct avp_queue *)rx_queue;
-	struct avp_dev *avp = rxq->avp;
-	struct rte_eth_dev_data *data = avp->dev_data;
-	unsigned int i;
-
-	for (i = 0; i < avp->num_rx_queues; i++) {
-		if (data->rx_queues[i] == rxq)
-			data->rx_queues[i] = NULL;
+	if (eth_dev->data->rx_queues[rx_queue_id] != NULL) {
+		rte_free(eth_dev->data->rx_queues[rx_queue_id]);
+		eth_dev->data->rx_queues[rx_queue_id] = NULL;
 	}
 }
 
 static void
-avp_dev_tx_queue_release(void *tx_queue)
+avp_dev_rx_queue_release_all(struct rte_eth_dev *eth_dev)
 {
-	struct avp_queue *txq = (struct avp_queue *)tx_queue;
-	struct avp_dev *avp = txq->avp;
+	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+	struct rte_eth_dev_data *data = avp->dev_data;
+	unsigned int i;
+
+	for (i = 0; i < avp->num_rx_queues; i++) {
+		if (data->rx_queues[i]) {
+			rte_free(data->rx_queues[i]);
+			data->rx_queues[i] = NULL;
+		}
+	}
+}
+
+static void
+avp_dev_tx_queue_release(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
+{
+	if (eth_dev->data->tx_queues[tx_queue_id] != NULL) {
+		rte_free(eth_dev->data->tx_queues[tx_queue_id]);
+		eth_dev->data->tx_queues[tx_queue_id] = NULL;
+	}
+}
+
+static void
+avp_dev_tx_queue_release_all(struct rte_eth_dev *eth_dev)
+{
+	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 	struct rte_eth_dev_data *data = avp->dev_data;
 	unsigned int i;
 
 	for (i = 0; i < avp->num_tx_queues; i++) {
-		if (data->tx_queues[i] == txq)
+		if (data->tx_queues[i]) {
+			rte_free(data->tx_queues[i]);
 			data->tx_queues[i] = NULL;
+		}
 	}
 }
 
@@ -1972,7 +1986,7 @@ avp_dev_configure(struct rte_eth_dev *eth_dev)
 
 	rte_spinlock_lock(&avp->lock);
 	if (avp->flags & AVP_F_DETACHED) {
-		PMD_DRV_LOG(ERR, "Operation not supported during VM live migration\n");
+		PMD_DRV_LOG_LINE(ERR, "Operation not supported during VM live migration");
 		ret = -ENOTSUP;
 		goto unlock;
 	}
@@ -1983,12 +1997,12 @@ avp_dev_configure(struct rte_eth_dev *eth_dev)
 	/* Setup required number of queues */
 	_avp_set_queue_counts(eth_dev);
 
-	mask = (ETH_VLAN_STRIP_MASK |
-		ETH_VLAN_FILTER_MASK |
-		ETH_VLAN_EXTEND_MASK);
+	mask = (RTE_ETH_VLAN_STRIP_MASK |
+		RTE_ETH_VLAN_FILTER_MASK |
+		RTE_ETH_VLAN_EXTEND_MASK);
 	ret = avp_vlan_offload_set(eth_dev, mask);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "VLAN offload set failed by host, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "VLAN offload set failed by host, ret=%d",
 			    ret);
 		goto unlock;
 	}
@@ -2004,7 +2018,7 @@ avp_dev_configure(struct rte_eth_dev *eth_dev)
 
 	ret = avp_dev_ctrl_set_config(eth_dev, &config);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Config request failed by host, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Config request failed by host, ret=%d",
 			    ret);
 		goto unlock;
 	}
@@ -2021,11 +2035,12 @@ static int
 avp_dev_start(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+	uint16_t i;
 	int ret;
 
 	rte_spinlock_lock(&avp->lock);
 	if (avp->flags & AVP_F_DETACHED) {
-		PMD_DRV_LOG(ERR, "Operation not supported during VM live migration\n");
+		PMD_DRV_LOG_LINE(ERR, "Operation not supported during VM live migration");
 		ret = -ENOTSUP;
 		goto unlock;
 	}
@@ -2033,13 +2048,18 @@ avp_dev_start(struct rte_eth_dev *eth_dev)
 	/* update link state */
 	ret = avp_dev_ctrl_set_link_state(eth_dev, 1);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Link state change failed by host, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Link state change failed by host, ret=%d",
 			    ret);
 		goto unlock;
 	}
 
 	/* remember current link state */
 	avp->flags |= AVP_F_LINKUP;
+
+	for (i = 0; i < avp->num_rx_queues; i++)
+		eth_dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	for (i = 0; i < avp->num_tx_queues; i++)
+		eth_dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
 
 	ret = 0;
 
@@ -2048,15 +2068,17 @@ unlock:
 	return ret;
 }
 
-static void
+static int
 avp_dev_stop(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
+	uint16_t i;
 	int ret;
 
 	rte_spinlock_lock(&avp->lock);
 	if (avp->flags & AVP_F_DETACHED) {
-		PMD_DRV_LOG(ERR, "Operation not supported during VM live migration\n");
+		PMD_DRV_LOG_LINE(ERR, "Operation not supported during VM live migration");
+		ret = -ENOTSUP;
 		goto unlock;
 	}
 
@@ -2066,23 +2088,32 @@ avp_dev_stop(struct rte_eth_dev *eth_dev)
 	/* update link state */
 	ret = avp_dev_ctrl_set_link_state(eth_dev, 0);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Link state change failed by host, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Link state change failed by host, ret=%d",
 			    ret);
 	}
 
+	for (i = 0; i < avp->num_rx_queues; i++)
+		eth_dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+	for (i = 0; i < avp->num_tx_queues; i++)
+		eth_dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+
 unlock:
 	rte_spinlock_unlock(&avp->lock);
+	return ret;
 }
 
-static void
+static int
 avp_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 	int ret;
 
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
 	rte_spinlock_lock(&avp->lock);
 	if (avp->flags & AVP_F_DETACHED) {
-		PMD_DRV_LOG(ERR, "Operation not supported during VM live migration\n");
+		PMD_DRV_LOG_LINE(ERR, "Operation not supported during VM live migration");
 		goto unlock;
 	}
 
@@ -2092,20 +2123,25 @@ avp_dev_close(struct rte_eth_dev *eth_dev)
 
 	ret = avp_dev_disable_interrupts(eth_dev);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Failed to disable interrupts\n");
+		PMD_DRV_LOG_LINE(ERR, "Failed to disable interrupts");
 		/* continue */
 	}
 
 	/* update device state */
 	ret = avp_dev_ctrl_shutdown(eth_dev);
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "Device shutdown failed by host, ret=%d\n",
+		PMD_DRV_LOG_LINE(ERR, "Device shutdown failed by host, ret=%d",
 			    ret);
 		/* continue */
 	}
 
+	/* release dynamic storage for rx/tx queues */
+	avp_dev_rx_queue_release_all(eth_dev);
+	avp_dev_tx_queue_release_all(eth_dev);
+
 unlock:
 	rte_spinlock_unlock(&avp->lock);
+	return 0;
 }
 
 static int
@@ -2115,14 +2151,14 @@ avp_dev_link_update(struct rte_eth_dev *eth_dev,
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
 	struct rte_eth_link *link = &eth_dev->data->dev_link;
 
-	link->link_speed = ETH_SPEED_NUM_10G;
-	link->link_duplex = ETH_LINK_FULL_DUPLEX;
+	link->link_speed = RTE_ETH_SPEED_NUM_10G;
+	link->link_duplex = RTE_ETH_LINK_FULL_DUPLEX;
 	link->link_status = !!(avp->flags & AVP_F_LINKUP);
 
 	return -1;
 }
 
-static void
+static int
 avp_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
@@ -2130,13 +2166,15 @@ avp_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
 	rte_spinlock_lock(&avp->lock);
 	if ((avp->flags & AVP_F_PROMISC) == 0) {
 		avp->flags |= AVP_F_PROMISC;
-		PMD_DRV_LOG(DEBUG, "Promiscuous mode enabled on %u\n",
+		PMD_DRV_LOG_LINE(DEBUG, "Promiscuous mode enabled on %u",
 			    eth_dev->data->port_id);
 	}
 	rte_spinlock_unlock(&avp->lock);
+
+	return 0;
 }
 
-static void
+static int
 avp_dev_promiscuous_disable(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
@@ -2144,13 +2182,15 @@ avp_dev_promiscuous_disable(struct rte_eth_dev *eth_dev)
 	rte_spinlock_lock(&avp->lock);
 	if ((avp->flags & AVP_F_PROMISC) != 0) {
 		avp->flags &= ~AVP_F_PROMISC;
-		PMD_DRV_LOG(DEBUG, "Promiscuous mode disabled on %u\n",
+		PMD_DRV_LOG_LINE(DEBUG, "Promiscuous mode disabled on %u",
 			    eth_dev->data->port_id);
 	}
 	rte_spinlock_unlock(&avp->lock);
+
+	return 0;
 }
 
-static void
+static int
 avp_dev_info_get(struct rte_eth_dev *eth_dev,
 		 struct rte_eth_dev_info *dev_info)
 {
@@ -2162,9 +2202,11 @@ avp_dev_info_get(struct rte_eth_dev *eth_dev,
 	dev_info->max_rx_pktlen = avp->max_rx_pkt_len;
 	dev_info->max_mac_addrs = AVP_MAX_MAC_ADDRS;
 	if (avp->host_features & RTE_AVP_FEATURE_VLAN_OFFLOAD) {
-		dev_info->rx_offload_capa = DEV_RX_OFFLOAD_VLAN_STRIP;
-		dev_info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT;
+		dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP;
+		dev_info->tx_offload_capa = RTE_ETH_TX_OFFLOAD_VLAN_INSERT;
 	}
+
+	return 0;
 }
 
 static int
@@ -2174,25 +2216,25 @@ avp_vlan_offload_set(struct rte_eth_dev *eth_dev, int mask)
 	struct rte_eth_conf *dev_conf = &eth_dev->data->dev_conf;
 	uint64_t offloads = dev_conf->rxmode.offloads;
 
-	if (mask & ETH_VLAN_STRIP_MASK) {
+	if (mask & RTE_ETH_VLAN_STRIP_MASK) {
 		if (avp->host_features & RTE_AVP_FEATURE_VLAN_OFFLOAD) {
-			if (offloads & DEV_RX_OFFLOAD_VLAN_STRIP)
+			if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP)
 				avp->features |= RTE_AVP_FEATURE_VLAN_OFFLOAD;
 			else
 				avp->features &= ~RTE_AVP_FEATURE_VLAN_OFFLOAD;
 		} else {
-			PMD_DRV_LOG(ERR, "VLAN strip offload not supported\n");
+			PMD_DRV_LOG_LINE(ERR, "VLAN strip offload not supported");
 		}
 	}
 
-	if (mask & ETH_VLAN_FILTER_MASK) {
-		if (offloads & DEV_RX_OFFLOAD_VLAN_FILTER)
-			PMD_DRV_LOG(ERR, "VLAN filter offload not supported\n");
+	if (mask & RTE_ETH_VLAN_FILTER_MASK) {
+		if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_FILTER)
+			PMD_DRV_LOG_LINE(ERR, "VLAN filter offload not supported");
 	}
 
-	if (mask & ETH_VLAN_EXTEND_MASK) {
-		if (offloads & DEV_RX_OFFLOAD_VLAN_EXTEND)
-			PMD_DRV_LOG(ERR, "VLAN extend offload not supported\n");
+	if (mask & RTE_ETH_VLAN_EXTEND_MASK) {
+		if (offloads & RTE_ETH_RX_OFFLOAD_VLAN_EXTEND)
+			PMD_DRV_LOG_LINE(ERR, "VLAN extend offload not supported");
 	}
 
 	return 0;
@@ -2228,14 +2270,13 @@ avp_dev_stats_get(struct rte_eth_dev *eth_dev, struct rte_eth_stats *stats)
 
 			stats->q_opackets[i] += txq->packets;
 			stats->q_obytes[i] += txq->bytes;
-			stats->q_errors[i] += txq->errors;
 		}
 	}
 
 	return 0;
 }
 
-static void
+static int
 avp_dev_stats_reset(struct rte_eth_dev *eth_dev)
 {
 	struct avp_dev *avp = AVP_DEV_PRIVATE_TO_HW(eth_dev->data->dev_private);
@@ -2260,14 +2301,10 @@ avp_dev_stats_reset(struct rte_eth_dev *eth_dev)
 			txq->errors = 0;
 		}
 	}
+
+	return 0;
 }
 
 RTE_PMD_REGISTER_PCI(net_avp, rte_avp_pmd);
 RTE_PMD_REGISTER_PCI_TABLE(net_avp, pci_id_avp_map);
-
-RTE_INIT(avp_init_log)
-{
-	avp_logtype_driver = rte_log_register("pmd.net.avp.driver");
-	if (avp_logtype_driver >= 0)
-		rte_log_set_level(avp_logtype_driver, RTE_LOG_NOTICE);
-}
+RTE_LOG_REGISTER_SUFFIX(avp_logtype_driver, driver, NOTICE);

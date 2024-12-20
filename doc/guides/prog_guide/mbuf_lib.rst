@@ -1,14 +1,12 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2014 Intel Corporation.
 
-.. _Mbuf_Library:
+Packet (Mbuf) Library
+=====================
 
-Mbuf Library
-============
-
-The mbuf library provides the ability to allocate and free buffers (mbufs)
+The Packet (MBuf) library provides the ability to allocate and free buffers (mbufs)
 that may be used by the DPDK application to store message buffers.
-The message buffers are stored in a mempool, using the :ref:`Mempool Library <Mempool_Library>`.
+The message buffers are stored in a mempool, using the :doc:`mempool_lib`.
 
 A rte_mbuf struct generally carries network packet buffers, but it can actually
 be any data (control data, events, ...).
@@ -64,7 +62,7 @@ The Buffer Manager implements a fairly standard set of buffer access functions t
 Buffers Stored in Memory Pools
 ------------------------------
 
-The Buffer Manager uses the :ref:`Mempool Library <Mempool_Library>` to allocate buffers.
+The Buffer Manager uses the :doc:`mempool_lib` to allocate buffers.
 Therefore, it ensures that the packet header is interleaved optimally across the channels and ranks for L3 processing.
 An mbuf contains a field indicating the pool that it originated from.
 When calling rte_pktmbuf_free(m), the mbuf returns to its original pool.
@@ -107,11 +105,13 @@ This library provides some functions for manipulating the data in a packet mbuf.
 
     *   Remove data at the end of the buffer (rte_pktmbuf_trim()) Refer to the *DPDK API Reference* for details.
 
+.. _mbuf_meta:
+
 Meta Information
 ----------------
 
 Some information is retrieved by the network driver and stored in an mbuf to make processing easier.
-For instance, the VLAN, the RSS hash result (see :ref:`Poll Mode Driver <Poll_Mode_Driver>`)
+For instance, the VLAN, the RSS hash result
 and a flag indicating that the checksum was computed by hardware.
 
 An mbuf also contains the input port (where it comes from), and the number of segment mbufs in the chain.
@@ -123,7 +123,7 @@ timestamp mechanism, the VLAN tagging and the IP checksum computation.
 
 On TX side, it is also possible for an application to delegate some
 processing to the hardware if it supports it. For instance, the
-PKT_TX_IP_CKSUM flag allows to offload the computation of the IPv4
+RTE_MBUF_F_TX_IP_CKSUM flag allows to offload the computation of the IPv4
 checksum.
 
 The following examples explain how to configure different TX offloads on
@@ -134,44 +134,44 @@ a vxlan-encapsulated tcp packet:
 
     mb->l2_len = len(out_eth)
     mb->l3_len = len(out_ip)
-    mb->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CSUM
+    mb->ol_flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM
     set out_ip checksum to 0 in the packet
 
-  This is supported on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM.
+  This is supported on hardware advertising RTE_ETH_TX_OFFLOAD_IPV4_CKSUM.
 
 - calculate checksum of out_ip and out_udp::
 
     mb->l2_len = len(out_eth)
     mb->l3_len = len(out_ip)
-    mb->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CSUM | PKT_TX_UDP_CKSUM
+    mb->ol_flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_UDP_CKSUM
     set out_ip checksum to 0 in the packet
     set out_udp checksum to pseudo header using rte_ipv4_phdr_cksum()
 
-  This is supported on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM
-  and DEV_TX_OFFLOAD_UDP_CKSUM.
+  This is supported on hardware advertising RTE_ETH_TX_OFFLOAD_IPV4_CKSUM
+  and RTE_ETH_TX_OFFLOAD_UDP_CKSUM.
 
 - calculate checksum of in_ip::
 
     mb->l2_len = len(out_eth + out_ip + out_udp + vxlan + in_eth)
     mb->l3_len = len(in_ip)
-    mb->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CSUM
+    mb->ol_flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM
     set in_ip checksum to 0 in the packet
 
   This is similar to case 1), but l2_len is different. It is supported
-  on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM.
+  on hardware advertising RTE_ETH_TX_OFFLOAD_IPV4_CKSUM.
   Note that it can only work if outer L4 checksum is 0.
 
 - calculate checksum of in_ip and in_tcp::
 
     mb->l2_len = len(out_eth + out_ip + out_udp + vxlan + in_eth)
     mb->l3_len = len(in_ip)
-    mb->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CSUM | PKT_TX_TCP_CKSUM
+    mb->ol_flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM
     set in_ip checksum to 0 in the packet
     set in_tcp checksum to pseudo header using rte_ipv4_phdr_cksum()
 
   This is similar to case 2), but l2_len is different. It is supported
-  on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM and
-  DEV_TX_OFFLOAD_TCP_CKSUM.
+  on hardware advertising RTE_ETH_TX_OFFLOAD_IPV4_CKSUM and
+  RTE_ETH_TX_OFFLOAD_TCP_CKSUM.
   Note that it can only work if outer L4 checksum is 0.
 
 - segment inner TCP::
@@ -179,13 +179,13 @@ a vxlan-encapsulated tcp packet:
     mb->l2_len = len(out_eth + out_ip + out_udp + vxlan + in_eth)
     mb->l3_len = len(in_ip)
     mb->l4_len = len(in_tcp)
-    mb->ol_flags |= PKT_TX_IPV4 | PKT_TX_IP_CKSUM | PKT_TX_TCP_CKSUM |
-      PKT_TX_TCP_SEG;
+    mb->ol_flags |= RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM |
+      RTE_MBUF_F_TX_TCP_SEG;
     set in_ip checksum to 0 in the packet
     set in_tcp checksum to pseudo header without including the IP
       payload length using rte_ipv4_phdr_cksum()
 
-  This is supported on hardware advertising DEV_TX_OFFLOAD_TCP_TSO.
+  This is supported on hardware advertising RTE_ETH_TX_OFFLOAD_TCP_TSO.
   Note that it can only work if outer L4 checksum is 0.
 
 - calculate checksum of out_ip, in_ip, in_tcp::
@@ -194,18 +194,41 @@ a vxlan-encapsulated tcp packet:
     mb->outer_l3_len = len(out_ip)
     mb->l2_len = len(out_udp + vxlan + in_eth)
     mb->l3_len = len(in_ip)
-    mb->ol_flags |= PKT_TX_OUTER_IPV4 | PKT_TX_OUTER_IP_CKSUM  | \
-      PKT_TX_IP_CKSUM |  PKT_TX_TCP_CKSUM;
+    mb->ol_flags |= RTE_MBUF_F_TX_OUTER_IPV4 | RTE_MBUF_F_TX_OUTER_IP_CKSUM  | \
+      RTE_MBUF_F_TX_IP_CKSUM |  RTE_MBUF_F_TX_TCP_CKSUM;
     set out_ip checksum to 0 in the packet
     set in_ip checksum to 0 in the packet
     set in_tcp checksum to pseudo header using rte_ipv4_phdr_cksum()
 
-  This is supported on hardware advertising DEV_TX_OFFLOAD_IPV4_CKSUM,
-  DEV_TX_OFFLOAD_UDP_CKSUM and DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM.
+  This is supported on hardware advertising RTE_ETH_TX_OFFLOAD_IPV4_CKSUM,
+  RTE_ETH_TX_OFFLOAD_UDP_CKSUM and RTE_ETH_TX_OFFLOAD_OUTER_IPV4_CKSUM.
 
 The list of flags and their precise meaning is described in the mbuf API
 documentation (rte_mbuf.h). Also refer to the testpmd source code
 (specifically the csumonly.c file) for details.
+
+Dynamic fields and flags
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The size of the mbuf is constrained and limited;
+while the amount of metadata to save for each packet is quite unlimited.
+The most basic networking information already find their place
+in the existing mbuf fields and flags.
+
+If new features need to be added, the new fields and flags should fit
+in the "dynamic space", by registering some room in the mbuf structure:
+
+dynamic field
+   named area in the mbuf structure,
+   with a given size (at least 1 byte) and alignment constraint.
+
+dynamic flag
+   named bit in the mbuf structure,
+   stored in the field ``ol_flags``.
+
+The dynamic fields and flags are managed with the functions ``rte_mbuf_dyn*``.
+
+It is not possible to unregister fields or flags.
 
 .. _direct_indirect_buffer:
 
@@ -243,8 +266,8 @@ can be found in several of the sample applications, for example, the IPv4 Multic
 Debug
 -----
 
-In debug mode (CONFIG_RTE_MBUF_DEBUG is enabled),
-the functions of the mbuf library perform sanity checks before any operation (such as, buffer corruption, bad type, and so on).
+In debug mode, the functions of the mbuf library perform sanity checks before any operation (such as, buffer corruption,
+bad type, and so on).
 
 Use Cases
 ---------

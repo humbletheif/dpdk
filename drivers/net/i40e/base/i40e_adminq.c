@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 #include "i40e_status.h"
@@ -28,7 +28,6 @@ STATIC void i40e_adminq_init_regs(struct i40e_hw *hw)
 		hw->aq.arq.len  = I40E_VF_ARQLEN1;
 		hw->aq.arq.bal  = I40E_VF_ARQBAL1;
 		hw->aq.arq.bah  = I40E_VF_ARQBAH1;
-#ifdef PF_DRIVER
 	} else {
 		hw->aq.asq.tail = I40E_PF_ATQT;
 		hw->aq.asq.head = I40E_PF_ATQH;
@@ -40,7 +39,6 @@ STATIC void i40e_adminq_init_regs(struct i40e_hw *hw)
 		hw->aq.arq.len  = I40E_PF_ARQLEN;
 		hw->aq.arq.bal  = I40E_PF_ARQBAL;
 		hw->aq.arq.bah  = I40E_PF_ARQBAH;
-#endif
 	}
 }
 
@@ -278,26 +276,8 @@ STATIC enum i40e_status_code i40e_config_asq_regs(struct i40e_hw *hw)
 	wr32(hw, hw->aq.asq.tail, 0);
 
 	/* set starting point */
-#ifdef PF_DRIVER
-#ifdef INTEGRATED_VF
-	if (!i40e_is_vf(hw))
-		wr32(hw, hw->aq.asq.len, (hw->aq.num_asq_entries |
-					  I40E_PF_ATQLEN_ATQENABLE_MASK));
-#else
 	wr32(hw, hw->aq.asq.len, (hw->aq.num_asq_entries |
 				  I40E_PF_ATQLEN_ATQENABLE_MASK));
-#endif /* INTEGRATED_VF */
-#endif /* PF_DRIVER */
-#ifdef VF_DRIVER
-#ifdef INTEGRATED_VF
-	if (i40e_is_vf(hw))
-		wr32(hw, hw->aq.asq.len, (hw->aq.num_asq_entries |
-					  I40E_VF_ATQLEN1_ATQENABLE_MASK));
-#else
-	wr32(hw, hw->aq.asq.len, (hw->aq.num_asq_entries |
-				  I40E_VF_ATQLEN1_ATQENABLE_MASK));
-#endif /* INTEGRATED_VF */
-#endif /* VF_DRIVER */
 	wr32(hw, hw->aq.asq.bal, I40E_LO_DWORD(hw->aq.asq.desc_buf.pa));
 	wr32(hw, hw->aq.asq.bah, I40E_HI_DWORD(hw->aq.asq.desc_buf.pa));
 
@@ -325,26 +305,8 @@ STATIC enum i40e_status_code i40e_config_arq_regs(struct i40e_hw *hw)
 	wr32(hw, hw->aq.arq.tail, 0);
 
 	/* set starting point */
-#ifdef PF_DRIVER
-#ifdef INTEGRATED_VF
-	if (!i40e_is_vf(hw))
-		wr32(hw, hw->aq.arq.len, (hw->aq.num_arq_entries |
-					  I40E_PF_ARQLEN_ARQENABLE_MASK));
-#else
 	wr32(hw, hw->aq.arq.len, (hw->aq.num_arq_entries |
 				  I40E_PF_ARQLEN_ARQENABLE_MASK));
-#endif /* INTEGRATED_VF */
-#endif /* PF_DRIVER */
-#ifdef VF_DRIVER
-#ifdef INTEGRATED_VF
-	if (i40e_is_vf(hw))
-		wr32(hw, hw->aq.arq.len, (hw->aq.num_arq_entries |
-					  I40E_VF_ARQLEN1_ARQENABLE_MASK));
-#else
-	wr32(hw, hw->aq.arq.len, (hw->aq.num_arq_entries |
-				  I40E_VF_ARQLEN1_ARQENABLE_MASK));
-#endif /* INTEGRATED_VF */
-#endif /* VF_DRIVER */
 	wr32(hw, hw->aq.arq.bal, I40E_LO_DWORD(hw->aq.arq.desc_buf.pa));
 	wr32(hw, hw->aq.arq.bah, I40E_HI_DWORD(hw->aq.arq.desc_buf.pa));
 
@@ -468,7 +430,7 @@ enum i40e_status_code i40e_init_arq(struct i40e_hw *hw)
 	/* initialize base registers */
 	ret_code = i40e_config_arq_regs(hw);
 	if (ret_code != I40E_SUCCESS)
-		goto init_adminq_free_rings;
+		goto init_config_regs;
 
 	/* success! */
 	hw->aq.arq.count = hw->aq.num_arq_entries;
@@ -476,6 +438,10 @@ enum i40e_status_code i40e_init_arq(struct i40e_hw *hw)
 
 init_adminq_free_rings:
 	i40e_free_adminq_arq(hw);
+	return ret_code;
+
+init_config_regs:
+	i40e_free_arq_bufs(hw);
 
 init_adminq_exit:
 	return ret_code;
@@ -548,7 +514,6 @@ shutdown_arq_out:
 	i40e_release_spinlock(&hw->aq.arq_spinlock);
 	return ret_code;
 }
-#ifdef PF_DRIVER
 
 /**
  *  i40e_resume_aq - resume AQ processing from 0
@@ -567,7 +532,70 @@ STATIC void i40e_resume_aq(struct i40e_hw *hw)
 
 	i40e_config_arq_regs(hw);
 }
-#endif /* PF_DRIVER */
+
+/**
+ *  i40e_set_hw_flags - set HW flags
+ *  @hw: pointer to the hardware structure
+ **/
+STATIC void i40e_set_hw_flags(struct i40e_hw *hw)
+{
+	struct i40e_adminq_info *aq = &hw->aq;
+
+	hw->flags = 0;
+
+	switch (hw->mac.type) {
+	case I40E_MAC_XL710:
+		if (aq->api_maj_ver > 1 ||
+		    (aq->api_maj_ver == 1 &&
+		     aq->api_min_ver >= I40E_MINOR_VER_GET_LINK_INFO_XL710)) {
+			hw->flags |= I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE;
+			hw->flags |= I40E_HW_FLAG_FW_LLDP_STOPPABLE;
+			/* The ability to RX (not drop) 802.1ad frames */
+			hw->flags |= I40E_HW_FLAG_802_1AD_CAPABLE;
+		}
+		break;
+	case I40E_MAC_X722:
+		hw->flags |= I40E_HW_FLAG_AQ_SRCTL_ACCESS_ENABLE |
+			     I40E_HW_FLAG_NVM_READ_REQUIRES_LOCK;
+
+		if (aq->api_maj_ver > 1 ||
+		    (aq->api_maj_ver == 1 &&
+		     aq->api_min_ver >= I40E_MINOR_VER_FW_LLDP_STOPPABLE_X722))
+			hw->flags |= I40E_HW_FLAG_FW_LLDP_STOPPABLE;
+
+		if (aq->api_maj_ver > 1 ||
+		    (aq->api_maj_ver == 1 &&
+		     aq->api_min_ver >= I40E_MINOR_VER_GET_LINK_INFO_X722))
+			hw->flags |= I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE;
+
+		if (aq->api_maj_ver > 1 ||
+		    (aq->api_maj_ver == 1 &&
+		     aq->api_min_ver >= I40E_MINOR_VER_FW_REQUEST_FEC_X722))
+			hw->flags |= I40E_HW_FLAG_X722_FEC_REQUEST_CAPABLE;
+
+		/* fall through */
+	default:
+		break;
+	}
+
+	/* Newer versions of firmware require lock when reading the NVM */
+	if (aq->api_maj_ver > 1 ||
+	    (aq->api_maj_ver == 1 &&
+	     aq->api_min_ver >= 5))
+		hw->flags |= I40E_HW_FLAG_NVM_READ_REQUIRES_LOCK;
+
+	if (aq->api_maj_ver > 1 ||
+	    (aq->api_maj_ver == 1 &&
+	     aq->api_min_ver >= 8)) {
+		hw->flags |= I40E_HW_FLAG_FW_LLDP_PERSISTENT;
+		hw->flags |= I40E_HW_FLAG_DROP_MODE;
+	}
+
+	if (aq->api_maj_ver > 1 ||
+	    (aq->api_maj_ver == 1 &&
+	     aq->api_min_ver >= 9))
+		hw->flags |= I40E_HW_FLAG_AQ_PHY_ACCESS_EXTENDED;
+}
 
 /**
  *  i40e_init_adminq - main initialization routine for Admin Queue
@@ -582,25 +610,24 @@ STATIC void i40e_resume_aq(struct i40e_hw *hw)
  **/
 enum i40e_status_code i40e_init_adminq(struct i40e_hw *hw)
 {
-#ifdef PF_DRIVER
-	u16 cfg_ptr, oem_hi, oem_lo;
-	u16 eetrack_lo, eetrack_hi;
-#endif
+	struct i40e_adminq_info *aq = &hw->aq;
 	enum i40e_status_code ret_code;
-#ifdef PF_DRIVER
+	u16 oem_hi = 0, oem_lo = 0;
+	u16 eetrack_hi = 0;
+	u16 eetrack_lo = 0;
+	u16 cfg_ptr = 0;
 	int retry = 0;
-#endif
 
 	/* verify input for valid configuration */
-	if ((hw->aq.num_arq_entries == 0) ||
-	    (hw->aq.num_asq_entries == 0) ||
-	    (hw->aq.arq_buf_size == 0) ||
-	    (hw->aq.asq_buf_size == 0)) {
+	if (aq->num_arq_entries == 0 ||
+	    aq->num_asq_entries == 0 ||
+	    aq->arq_buf_size == 0 ||
+	    aq->asq_buf_size == 0) {
 		ret_code = I40E_ERR_CONFIG;
 		goto init_adminq_exit;
 	}
-	i40e_init_spinlock(&hw->aq.asq_spinlock);
-	i40e_init_spinlock(&hw->aq.arq_spinlock);
+	i40e_init_spinlock(&aq->asq_spinlock);
+	i40e_init_spinlock(&aq->arq_spinlock);
 
 	/* Set up register offsets */
 	i40e_adminq_init_regs(hw);
@@ -618,23 +645,17 @@ enum i40e_status_code i40e_init_adminq(struct i40e_hw *hw)
 	if (ret_code != I40E_SUCCESS)
 		goto init_adminq_free_asq;
 
-#ifdef PF_DRIVER
-#ifdef INTEGRATED_VF
-	/* VF has no need of firmware */
-	if (i40e_is_vf(hw))
-		goto init_adminq_exit;
-#endif
 	/* There are some cases where the firmware may not be quite ready
 	 * for AdminQ operations, so we retry the AdminQ setup a few times
 	 * if we see timeouts in this first AQ call.
 	 */
 	do {
 		ret_code = i40e_aq_get_firmware_version(hw,
-							&hw->aq.fw_maj_ver,
-							&hw->aq.fw_min_ver,
-							&hw->aq.fw_build,
-							&hw->aq.api_maj_ver,
-							&hw->aq.api_min_ver,
+							&aq->fw_maj_ver,
+							&aq->fw_min_ver,
+							&aq->fw_build,
+							&aq->api_maj_ver,
+							&aq->api_min_ver,
 							NULL);
 		if (ret_code != I40E_ERR_ADMIN_QUEUE_TIMEOUT)
 			break;
@@ -645,6 +666,12 @@ enum i40e_status_code i40e_init_adminq(struct i40e_hw *hw)
 	if (ret_code != I40E_SUCCESS)
 		goto init_adminq_free_arq;
 
+	/*
+	 * Some features were introduced in different FW API version
+	 * for different MAC type.
+	 */
+	i40e_set_hw_flags(hw);
+
 	/* get the NVM version info */
 	i40e_read_nvm_word(hw, I40E_SR_NVM_DEV_STARTER_VERSION,
 			   &hw->nvm.version);
@@ -652,37 +679,11 @@ enum i40e_status_code i40e_init_adminq(struct i40e_hw *hw)
 	i40e_read_nvm_word(hw, I40E_SR_NVM_EETRACK_HI, &eetrack_hi);
 	hw->nvm.eetrack = (eetrack_hi << 16) | eetrack_lo;
 	i40e_read_nvm_word(hw, I40E_SR_BOOT_CONFIG_PTR, &cfg_ptr);
-	i40e_read_nvm_word(hw, (cfg_ptr + I40E_NVM_OEM_VER_OFF),
-			   &oem_hi);
-	i40e_read_nvm_word(hw, (cfg_ptr + (I40E_NVM_OEM_VER_OFF + 1)),
-			   &oem_lo);
+	i40e_read_nvm_word(hw, (cfg_ptr + I40E_NVM_OEM_VER_OFF), &oem_hi);
+	i40e_read_nvm_word(hw, (cfg_ptr + (I40E_NVM_OEM_VER_OFF + 1)), &oem_lo);
 	hw->nvm.oem_ver = ((u32)oem_hi << 16) | oem_lo;
 
-	/* The ability to RX (not drop) 802.1ad frames was added in API 1.7 */
-	if ((hw->aq.api_maj_ver > 1) ||
-	    ((hw->aq.api_maj_ver == 1) &&
-	     (hw->aq.api_min_ver >= 7)))
-		hw->flags |= I40E_HW_FLAG_802_1AD_CAPABLE;
-
-	if (hw->mac.type == I40E_MAC_XL710 &&
-	    hw->aq.api_maj_ver == I40E_FW_API_VERSION_MAJOR &&
-	    hw->aq.api_min_ver >= I40E_MINOR_VER_GET_LINK_INFO_XL710) {
-		hw->flags |= I40E_HW_FLAG_AQ_PHY_ACCESS_CAPABLE;
-		hw->flags |= I40E_HW_FLAG_FW_LLDP_STOPPABLE;
-	}
-	if (hw->mac.type == I40E_MAC_X722 &&
-	    hw->aq.api_maj_ver == I40E_FW_API_VERSION_MAJOR &&
-	    hw->aq.api_min_ver >= I40E_MINOR_VER_FW_LLDP_STOPPABLE_X722) {
-		hw->flags |= I40E_HW_FLAG_FW_LLDP_STOPPABLE;
-	}
-
-	/* Newer versions of firmware require lock when reading the NVM */
-	if ((hw->aq.api_maj_ver > 1) ||
-	    ((hw->aq.api_maj_ver == 1) &&
-	     (hw->aq.api_min_ver >= 5)))
-		hw->flags |= I40E_HW_FLAG_NVM_READ_REQUIRES_LOCK;
-
-	if (hw->aq.api_maj_ver > I40E_FW_API_VERSION_MAJOR) {
+	if (aq->api_maj_ver > I40E_FW_API_VERSION_MAJOR) {
 		ret_code = I40E_ERR_FIRMWARE_API_VERSION;
 		goto init_adminq_free_arq;
 	}
@@ -692,21 +693,18 @@ enum i40e_status_code i40e_init_adminq(struct i40e_hw *hw)
 	hw->nvm_release_on_done = false;
 	hw->nvmupd_state = I40E_NVMUPD_STATE_INIT;
 
-#endif /* PF_DRIVER */
 	ret_code = I40E_SUCCESS;
 
 	/* success! */
 	goto init_adminq_exit;
 
-#ifdef PF_DRIVER
 init_adminq_free_arq:
 	i40e_shutdown_arq(hw);
-#endif
 init_adminq_free_asq:
 	i40e_shutdown_asq(hw);
 init_adminq_destroy_spinlocks:
-	i40e_destroy_spinlock(&hw->aq.asq_spinlock);
-	i40e_destroy_spinlock(&hw->aq.arq_spinlock);
+	i40e_destroy_spinlock(&aq->asq_spinlock);
+	i40e_destroy_spinlock(&aq->arq_spinlock);
 
 init_adminq_exit:
 	return ret_code;
@@ -747,12 +745,26 @@ u16 i40e_clean_asq(struct i40e_hw *hw)
 	u16 ntc = asq->next_to_clean;
 	struct i40e_aq_desc desc_cb;
 	struct i40e_aq_desc *desc;
+	u32 head = 0;
+
+	if (ntc >= (1 << 10))
+		goto clean_asq_exit;
 
 	desc = I40E_ADMINQ_DESC(*asq, ntc);
 	details = I40E_ADMINQ_DETAILS(*asq, ntc);
-	while (rd32(hw, hw->aq.asq.head) != ntc) {
-		i40e_debug(hw, I40E_DEBUG_AQ_MESSAGE,
-			   "ntc %d head %d.\n", ntc, rd32(hw, hw->aq.asq.head));
+	while (true) {
+		head = rd32(hw, hw->aq.asq.head);
+
+		if (head >= asq->count) {
+			i40e_debug(hw, I40E_DEBUG_AQ_COMMAND, "Read head value is improper\n");
+			return 0;
+		}
+
+		if (head == ntc)
+			break;
+
+		i40e_debug(hw, I40E_DEBUG_AQ_COMMAND,
+			   "ntc %d head %d.\n", ntc, head);
 
 		if (details->callback) {
 			I40E_ADMINQ_CALLBACK cb_func =
@@ -772,6 +784,7 @@ u16 i40e_clean_asq(struct i40e_hw *hw)
 
 	asq->next_to_clean = ntc;
 
+clean_asq_exit:
 	return I40E_DESC_UNUSED(asq);
 }
 
@@ -782,11 +795,7 @@ u16 i40e_clean_asq(struct i40e_hw *hw)
  *  Returns true if the firmware has processed all descriptors on the
  *  admin send queue. Returns false if there are still requests pending.
  **/
-#ifdef VF_DRIVER
-bool i40e_asq_done(struct i40e_hw *hw)
-#else
 STATIC bool i40e_asq_done(struct i40e_hw *hw)
-#endif
 {
 	/* AQ designers suggest use of head for better
 	 * timing reliability than DD bit
@@ -796,7 +805,7 @@ STATIC bool i40e_asq_done(struct i40e_hw *hw)
 }
 
 /**
- *  i40e_asq_send_command - send command to Admin Queue
+ *  i40e_asq_send_command_exec - send command to Admin Queue
  *  @hw: pointer to the hw struct
  *  @desc: prefilled descriptor describing the command (non DMA mem)
  *  @buff: buffer to use for indirect commands
@@ -806,11 +815,12 @@ STATIC bool i40e_asq_done(struct i40e_hw *hw)
  *  This is the main send command driver routine for the Admin Queue send
  *  queue.  It runs the queue, cleans the queue, etc
  **/
-enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
-				struct i40e_aq_desc *desc,
-				void *buff, /* can be NULL */
-				u16  buff_size,
-				struct i40e_asq_cmd_details *cmd_details)
+STATIC enum i40e_status_code
+i40e_asq_send_command_exec(struct i40e_hw *hw,
+			   struct i40e_aq_desc *desc,
+			   void *buff, /* can be NULL */
+			   u16  buff_size,
+			   struct i40e_asq_cmd_details *cmd_details)
 {
 	enum i40e_status_code status = I40E_SUCCESS;
 	struct i40e_dma_mem *dma_buff = NULL;
@@ -819,8 +829,6 @@ enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
 	bool cmd_completed = false;
 	u16  retval = 0;
 	u32  val = 0;
-
-	i40e_acquire_spinlock(&hw->aq.asq_spinlock);
 
 	hw->aq.asq_last_status = I40E_AQ_RC_OK;
 
@@ -835,7 +843,7 @@ enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
 	if (val >= hw->aq.num_asq_entries) {
 		i40e_debug(hw, I40E_DEBUG_AQ_MESSAGE,
 			   "AQTX: head overrun at %d\n", val);
-		status = I40E_ERR_QUEUE_EMPTY;
+		status = I40E_ERR_ADMIN_QUEUE_FULL;
 		goto asq_send_command_error;
 	}
 
@@ -923,7 +931,7 @@ enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
 	}
 
 	/* bump the tail */
-	i40e_debug(hw, I40E_DEBUG_AQ_MESSAGE, "AQTX: desc and buffer:\n");
+	i40e_debug(hw, I40E_DEBUG_AQ_COMMAND, "AQTX: desc and buffer:\n");
 	i40e_debug_aq(hw, I40E_DEBUG_AQ_COMMAND, (void *)desc_on_ring,
 		      buff, buff_size);
 	(hw->aq.asq.next_to_use)++;
@@ -976,7 +984,7 @@ enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
 		hw->aq.asq_last_status = (enum i40e_admin_queue_err)retval;
 	}
 
-	i40e_debug(hw, I40E_DEBUG_AQ_MESSAGE,
+	i40e_debug(hw, I40E_DEBUG_AQ_COMMAND,
 		   "AQTX: desc and buffer writeback:\n");
 	i40e_debug_aq(hw, I40E_DEBUG_AQ_COMMAND, (void *)desc, buff, buff_size);
 
@@ -988,11 +996,7 @@ enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
 	/* update the error if time out occurred */
 	if ((!cmd_completed) &&
 	    (!details->async && !details->postpone)) {
-#ifdef PF_DRIVER
 		if (rd32(hw, hw->aq.asq.len) & I40E_GL_ATQLEN_ATQCRIT_MASK) {
-#else
-		if (rd32(hw, hw->aq.asq.len) & I40E_VF_ATQLEN1_ATQCRIT_MASK) {
-#endif
 			i40e_debug(hw, I40E_DEBUG_AQ_MESSAGE,
 				   "AQTX: AQ Critical error.\n");
 			status = I40E_ERR_ADMIN_QUEUE_CRITICAL_ERROR;
@@ -1004,6 +1008,64 @@ enum i40e_status_code i40e_asq_send_command(struct i40e_hw *hw,
 	}
 
 asq_send_command_error:
+	return status;
+}
+
+/**
+ *  i40e_asq_send_command - send command to Admin Queue
+ *  @hw: pointer to the hw struct
+ *  @desc: prefilled descriptor describing the command (non DMA mem)
+ *  @buff: buffer to use for indirect commands
+ *  @buff_size: size of buffer for indirect commands
+ *  @cmd_details: pointer to command details structure
+ *
+ *  Acquires the lock and calls the main send command execution
+ *  routine.
+ **/
+enum i40e_status_code
+i40e_asq_send_command(struct i40e_hw *hw,
+		      struct i40e_aq_desc *desc,
+		      void *buff, /* can be NULL */
+		      u16  buff_size,
+		      struct i40e_asq_cmd_details *cmd_details)
+{
+	enum i40e_status_code status = I40E_SUCCESS;
+
+	i40e_acquire_spinlock(&hw->aq.asq_spinlock);
+	status = i40e_asq_send_command_exec(hw, desc, buff, buff_size,
+					    cmd_details);
+	i40e_release_spinlock(&hw->aq.asq_spinlock);
+	return status;
+}
+
+/**
+ *  i40e_asq_send_command_v2 - send command to Admin Queue
+ *  @hw: pointer to the hw struct
+ *  @desc: prefilled descriptor describing the command (non DMA mem)
+ *  @buff: buffer to use for indirect commands
+ *  @buff_size: size of buffer for indirect commands
+ *  @cmd_details: pointer to command details structure
+ *  @aq_status: pointer to Admin Queue status return value
+ *
+ *  Acquires the lock and calls the main send command execution
+ *  routine. Returns the last Admin Queue status in aq_status
+ *  to avoid race conditions in access to hw->aq.asq_last_status.
+ **/
+enum i40e_status_code
+i40e_asq_send_command_v2(struct i40e_hw *hw,
+			 struct i40e_aq_desc *desc,
+			 void *buff, /* can be NULL */
+			 u16  buff_size,
+			 struct i40e_asq_cmd_details *cmd_details,
+			 enum i40e_admin_queue_err *aq_status)
+{
+	enum i40e_status_code status = I40E_SUCCESS;
+
+	i40e_acquire_spinlock(&hw->aq.asq_spinlock);
+	status = i40e_asq_send_command_exec(hw, desc, buff, buff_size,
+					    cmd_details);
+	if (aq_status)
+		*aq_status = hw->aq.asq_last_status;
 	i40e_release_spinlock(&hw->aq.asq_spinlock);
 	return status;
 }
@@ -1062,19 +1124,7 @@ enum i40e_status_code i40e_clean_arq_element(struct i40e_hw *hw,
 	}
 
 	/* set next_to_use to head */
-#ifdef INTEGRATED_VF
-	if (!i40e_is_vf(hw))
-		ntu = rd32(hw, hw->aq.arq.head) & I40E_PF_ARQH_ARQH_MASK;
-	else
-		ntu = rd32(hw, hw->aq.arq.head) & I40E_VF_ARQH1_ARQH_MASK;
-#else
-#ifdef PF_DRIVER
 	ntu = rd32(hw, hw->aq.arq.head) & I40E_PF_ARQH_ARQH_MASK;
-#endif /* PF_DRIVER */
-#ifdef VF_DRIVER
-	ntu = rd32(hw, hw->aq.arq.head) & I40E_VF_ARQH1_ARQH_MASK;
-#endif /* VF_DRIVER */
-#endif /* INTEGRATED_VF */
 	if (ntu == ntc) {
 		/* nothing to do - shouldn't need to update ring's values */
 		ret_code = I40E_ERR_ADMIN_QUEUE_NO_WORK;
@@ -1105,7 +1155,7 @@ enum i40e_status_code i40e_clean_arq_element(struct i40e_hw *hw,
 			    hw->aq.arq.r.arq_bi[desc_idx].va,
 			    e->msg_len, I40E_DMA_TO_NONDMA);
 
-	i40e_debug(hw, I40E_DEBUG_AQ_MESSAGE, "AQRX: desc and buffer:\n");
+	i40e_debug(hw, I40E_DEBUG_AQ_COMMAND, "AQRX: desc and buffer:\n");
 	i40e_debug_aq(hw, I40E_DEBUG_AQ_COMMAND, (void *)desc, e->msg_buf,
 		      hw->aq.arq_buf_size);
 
@@ -1132,9 +1182,7 @@ enum i40e_status_code i40e_clean_arq_element(struct i40e_hw *hw,
 	hw->aq.arq.next_to_clean = ntc;
 	hw->aq.arq.next_to_use = ntu;
 
-#ifdef PF_DRIVER
 	i40e_nvmupd_check_wait_event(hw, LE16_TO_CPU(e->desc.opcode), &e->desc);
-#endif /* PF_DRIVER */
 clean_arq_element_out:
 	/* Set pending if needed, unlock and return */
 	if (pending != NULL)

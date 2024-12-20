@@ -12,44 +12,62 @@ Network Interface Controller Drivers
     features
     build_and_test
     af_packet
+    af_xdp
     ark
     atlantic
     avp
     axgbe
     bnx2x
     bnxt
+    cnxk
+    cpfl
     cxgbe
     dpaa
     dpaa2
     e1000em
     ena
     enetc
+    enetfec
     enic
+    fail_safe
     fm10k
+    gve
+    hinic
+    hns3
     i40e
     ice
-    ifc
+    idpf
     igb
-    ixgbe
+    igc
     intel_vf
-    kni
-    liquidio
+    ionic
+    ipn3ke
+    ixgbe
+    mana
+    memif
     mlx4
     mlx5
     mvneta
     mvpp2
     netvsc
+    nfb
     nfp
+    ngbe
+    ntnic
+    null
+    octeon_ep
     octeontx
+    pcap_ring
+    pfe
     qede
+    r8169
     sfc_efx
     softnic
-    szedata2
     tap
     thunderx
+    txgbe
     vdev_netvsc
-    virtio
     vhost
+    virtio
     vmxnet3
-    pcap_ring
-    fail_safe
+    zxdh

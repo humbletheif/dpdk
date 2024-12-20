@@ -20,10 +20,11 @@ static inline
 int vnic_wq_alloc_ring(struct vnic_dev *vdev, struct vnic_wq *wq,
 				unsigned int desc_count, unsigned int desc_size)
 {
-	char res_name[NAME_MAX];
+	char res_name[RTE_MEMZONE_NAMESIZE];
 	static int instance;
 
-	snprintf(res_name, sizeof(res_name), "%d-wq-%u", instance++, wq->index);
+	snprintf(res_name, sizeof(res_name), "%d-%swq-%u",
+		 instance++, wq->admin_chan ? "admin-" : "", wq->index);
 	return vnic_dev_alloc_desc_ring(vdev, &wq->ring, desc_count, desc_size,
 		wq->socket_id, res_name);
 }
@@ -32,7 +33,7 @@ static int vnic_wq_alloc_bufs(struct vnic_wq *wq)
 {
 	unsigned int count = wq->ring.desc_count;
        /* Allocate the mbuf ring */
-	wq->bufs = (struct rte_mbuf **)rte_zmalloc_socket("wq->bufs",
+	wq->bufs = (struct rte_mbuf **)rte_zmalloc_socket(wq->admin_chan ? "admin-wq-bufs" : "wq-bufs",
 		    sizeof(struct rte_mbuf *) * count,
 		    RTE_CACHE_LINE_SIZE, wq->socket_id);
 	wq->head_idx = 0;
@@ -62,10 +63,42 @@ int vnic_wq_alloc(struct vnic_dev *vdev, struct vnic_wq *wq, unsigned int index,
 
 	wq->index = index;
 	wq->vdev = vdev;
+	wq->admin_chan = false;
 
 	err = vnic_wq_get_ctrl(vdev, wq, index, RES_TYPE_WQ);
 	if (err) {
 		pr_err("Failed to hook WQ[%d] resource, err %d\n", index, err);
+		return err;
+	}
+
+	vnic_wq_disable(wq);
+
+	err = vnic_wq_alloc_ring(vdev, wq, desc_count, desc_size);
+	if (err)
+		return err;
+
+	err = vnic_wq_alloc_bufs(wq);
+	if (err) {
+		vnic_wq_free(wq);
+		return err;
+	}
+
+	return 0;
+}
+
+int vnic_admin_wq_alloc(struct vnic_dev *vdev, struct vnic_wq *wq,
+	unsigned int desc_count, unsigned int desc_size)
+{
+	int err;
+
+	wq->index = 0;
+	wq->vdev = vdev;
+	wq->admin_chan = true;
+	wq->socket_id = SOCKET_ID_ANY;
+
+	err = vnic_wq_get_ctrl(vdev, wq, 0, RES_TYPE_ADMIN_WQ);
+	if (err) {
+		pr_err("Failed to get admin WQ resource err %d\n", err);
 		return err;
 	}
 
@@ -89,10 +122,10 @@ void vnic_wq_init_start(struct vnic_wq *wq, unsigned int cq_index,
 	unsigned int error_interrupt_enable,
 	unsigned int error_interrupt_offset)
 {
-	u64 paddr;
+	uint64_t paddr;
 	unsigned int count = wq->ring.desc_count;
 
-	paddr = (u64)wq->ring.base_addr | VNIC_PADDR_TARGET;
+	paddr = (uint64_t)wq->ring.base_addr | VNIC_PADDR_TARGET;
 	writeq(paddr, &wq->ctrl->ring_base);
 	iowrite32(count, &wq->ctrl->ring_size);
 	iowrite32(fetch_index, &wq->ctrl->fetch_index);
@@ -137,7 +170,7 @@ int vnic_wq_disable(struct vnic_wq *wq)
 	for (wait = 0; wait < 1000; wait++) {
 		if (!(ioread32(&wq->ctrl->running)))
 			return 0;
-		udelay(10);
+		usleep(10);
 	}
 
 	pr_err("Failed to disable WQ[%d]\n", wq->index);

@@ -4,45 +4,8 @@
 DPDK Release 17.11
 ==================
 
-.. **Read this first.**
-
-   The text in the sections below explains how to update the release notes.
-
-   Use proper spelling, capitalization and punctuation in all sections.
-
-   Variable and config names should be quoted as fixed width text:
-   ``LIKE_THIS``.
-
-   Build the docs and view the output file to ensure the changes are correct::
-
-      make doc-guides-html
-
-      xdg-open build/doc/html/guides/rel_notes/release_17_11.html
-
-
 New Features
 ------------
-
-.. This section should contain new features added in this release. Sample
-   format:
-
-   * **Add a title in the past tense with a full stop.**
-
-     Add a short 1-2 sentence description in the past tense. The description
-     should be enough to allow someone scanning the release notes to
-     understand the new feature.
-
-     If the feature adds a lot of sub-features you can use a bullet list like
-     this:
-
-     * Added feature foo to do something.
-     * Enhanced feature bar to do something else.
-
-     Refer to the previous release notes for examples.
-
-     This section is a comment. do not overwrite or remove it.
-     Also, make sure to start the actual text at the margin.
-     =========================================================
 
 * **Extended port_id range from uint8_t to uint16_t.**
 
@@ -168,7 +131,7 @@ New Features
   * The DES CBC algorithm.
   * The DES DOCSIS BPI algorithm.
 
-  This change requires version 0.47 of the IPSec Multi-buffer library. For
+  This change requires version 0.47 of the IPsec Multi-buffer library. For
   more details see the :doc:`../cryptodevs/aesni_mb` documentation.
 
 * **Updated the OpenSSL PMD.**
@@ -198,7 +161,7 @@ New Features
 * **Added the Security Offload Library.**
 
   Added an experimental library - ``rte_security``. This provide security APIs
-  for protocols like IPSec using inline ipsec offload to ethernet devices or
+  for protocols like IPsec using inline ipsec offload to ethernet devices or
   full protocol offload with lookaside crypto devices.
 
   See the :doc:`../prog_guide/rte_security` section of the DPDK Programmers
@@ -207,11 +170,11 @@ New Features
 * **Updated the DPAA2_SEC crypto driver to support rte_security.**
 
   Updated the ``dpaa2_sec`` crypto PMD to support ``rte_security`` lookaside
-  protocol offload for IPSec.
+  protocol offload for IPsec.
 
 * **Updated the IXGBE ethernet driver to support rte_security.**
 
-  Updated ixgbe ethernet PMD to support ``rte_security`` inline IPSec offload.
+  Updated ixgbe ethernet PMD to support ``rte_security`` inline IPsec offload.
 
 * **Updated i40e driver to support GTP-C/GTP-U.**
 
@@ -293,23 +256,6 @@ New Features
 Resolved Issues
 ---------------
 
-.. This section should contain bug fixes added to the relevant
-   sections. Sample format:
-
-   * **code/section Fixed issue in the past tense with a full stop.**
-
-     Add a short 1-2 sentence description of the resolved issue in the past
-     tense.
-
-     The title should contain the code/lib section like a commit message.
-
-     Add the entries in alphabetic order in the relevant sections below.
-
-   This section is a comment. do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
-
-
 * **Service core fails to call service callback due to atomic lock**
 
   In a specific configuration of multi-thread unsafe services and service
@@ -321,16 +267,6 @@ Resolved Issues
 
 API Changes
 -----------
-
-.. This section should contain API changes. Sample format:
-
-   * Add a short 1-2 sentence description of the API change. Use fixed width
-     quotes for ``rte_function_names`` or ``rte_struct_names``. Use the past
-     tense.
-
-   This section is a comment. do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
 
 * **Ethdev device name length increased.**
 
@@ -475,7 +411,7 @@ API Changes
 * **Added mbuf flags PKT_RX_VLAN and PKT_RX_QINQ.**
 
   Two ``mbuf`` flags have been added to indicate that the VLAN
-  identifier has been saved in in the ``mbuf`` structure. For instance:
+  identifier has been saved in the ``mbuf`` structure. For instance:
 
   - If VLAN is not stripped and TCI is saved: ``PKT_RX_VLAN``
   - If VLAN is stripped and TCI is saved: ``PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED``
@@ -491,16 +427,6 @@ API Changes
 ABI Changes
 -----------
 
-.. This section should contain ABI changes. Sample format:
-
-   * Add a short 1-2 sentence description of the ABI change that was announced
-     in the previous releases and made in this release. Use fixed width quotes
-     for ``rte_function_names`` or ``rte_struct_names``. Use the past tense.
-
-   This section is a comment. do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
-
 * **Extended port_id range.**
 
   The size of the field ``port_id`` in the ``rte_eth_dev_data`` structure
@@ -509,7 +435,7 @@ ABI Changes
 * **New parameter added to rte_eth_dev.**
 
   A new parameter ``security_ctx`` has been added to ``rte_eth_dev`` to
-  support security operations like IPSec inline.
+  support security operations like IPsec inline.
 
 * **New parameter added to rte_cryptodev.**
 
@@ -520,15 +446,6 @@ ABI Changes
 Removed Items
 -------------
 
-.. This section should contain removed items in this release. Sample format:
-
-   * Add a short 1-2 sentence description of the removed item in the past
-     tense.
-
-   This section is a comment. do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
-
 * Xen dom0 in EAL has been removed, as well as the xenvirt PMD and vhost_xen.
 
 * The crypto performance unit tests have been removed,
@@ -537,17 +454,6 @@ Removed Items
 
 Shared Library Versions
 -----------------------
-
-.. Update any library version updated in this release and prepend with a ``+``
-   sign, like this:
-
-     librte_acl.so.2
-   + librte_cfgfile.so.2
-     librte_cmdline.so.2
-
-   This section is a comment. do not overwrite or remove it.
-   =========================================================
-
 
 The libraries prepended with a plus sign were incremented in this version.
 
@@ -604,22 +510,6 @@ The libraries prepended with a plus sign were incremented in this version.
 
 Tested Platforms
 ----------------
-
-.. This section should contain a list of platforms that were tested with this
-   release.
-
-   The format is:
-
-   * <vendor> platform with <vendor> <type of devices> combinations
-
-     * List of CPU
-     * List of OS
-     * List of devices
-     * Other relevant details...
-
-   This section is a comment. do not overwrite or remove it.
-   Also, make sure to start the actual text at the margin.
-   =========================================================
 
 * Intel(R) platforms with Intel(R) NICs combinations
 

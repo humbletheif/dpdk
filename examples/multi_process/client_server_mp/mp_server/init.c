@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/queue.h>
 #include <errno.h>
@@ -15,7 +16,6 @@
 #include <rte_memzone.h>
 #include <rte_eal.h>
 #include <rte_byteorder.h>
-#include <rte_atomic.h>
 #include <rte_launch.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
@@ -37,8 +37,6 @@
 #include "args.h"
 #include "init.h"
 
-#define MBUFS_PER_CLIENT 1536
-#define MBUFS_PER_PORT 1536
 #define MBUF_CACHE_SIZE 512
 
 #define RTE_MP_RX_DESC_DEFAULT 1024
@@ -63,8 +61,15 @@ struct port_info *ports;
 static int
 init_mbuf_pools(void)
 {
-	const unsigned num_mbufs = (num_clients * MBUFS_PER_CLIENT) \
-			+ (ports->num_ports * MBUFS_PER_PORT);
+	const unsigned int num_mbufs_server =
+		RTE_MP_RX_DESC_DEFAULT * ports->num_ports;
+	const unsigned int num_mbufs_client =
+		num_clients * (CLIENT_QUEUE_RINGSIZE +
+			       RTE_MP_TX_DESC_DEFAULT * ports->num_ports);
+	const unsigned int num_mbufs_mp_cache =
+		(num_clients + 1) * MBUF_CACHE_SIZE;
+	const unsigned int num_mbufs =
+		num_mbufs_server + num_mbufs_client + num_mbufs_mp_cache;
 
 	/* don't pass single-producer/single-consumer flags to mbuf create as it
 	 * seems faster to use a cache instead */
@@ -89,7 +94,7 @@ init_port(uint16_t port_num)
 	/* for port configuration all features are off by default */
 	const struct rte_eth_conf port_conf = {
 		.rxmode = {
-			.mq_mode = ETH_MQ_RX_RSS
+			.mq_mode = RTE_ETH_MQ_RX_RSS
 		}
 	};
 	const uint16_t rx_rings = 1, tx_rings = num_clients;
@@ -127,7 +132,9 @@ init_port(uint16_t port_num)
 		if (retval < 0) return retval;
 	}
 
-	rte_eth_promiscuous_enable(port_num);
+	retval = rte_eth_promiscuous_enable(port_num);
+	if (retval < 0)
+		return retval;
 
 	retval  = rte_eth_dev_start(port_num);
 	if (retval < 0) return retval;
@@ -177,6 +184,8 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 	uint16_t portid;
 	uint8_t count, all_ports_up, print_flag = 0;
 	struct rte_eth_link link;
+	int ret;
+	char link_status_text[RTE_ETH_LINK_MAX_STR_LEN];
 
 	printf("\nChecking link status");
 	fflush(stdout);
@@ -186,22 +195,25 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 			if ((port_mask & (1 << ports->id[portid])) == 0)
 				continue;
 			memset(&link, 0, sizeof(link));
-			rte_eth_link_get_nowait(ports->id[portid], &link);
+			ret = rte_eth_link_get_nowait(ports->id[portid], &link);
+			if (ret < 0) {
+				all_ports_up = 0;
+				if (print_flag == 1)
+					printf("Port %u link get failed: %s\n",
+						portid, rte_strerror(-ret));
+				continue;
+			}
 			/* print link status if flag set */
 			if (print_flag == 1) {
-				if (link.link_status)
-					printf("Port %d Link Up - speed %u "
-						"Mbps - %s\n", ports->id[portid],
-						(unsigned)link.link_speed,
-				(link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
-					("full-duplex") : ("half-duplex\n"));
-				else
-					printf("Port %d Link Down\n",
-						(uint8_t)ports->id[portid]);
+				rte_eth_link_to_str(link_status_text,
+					sizeof(link_status_text), &link);
+				printf("Port %d %s\n",
+				       ports->id[portid],
+				       link_status_text);
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -233,7 +245,7 @@ init(int argc, char *argv[])
 {
 	int retval;
 	const struct rte_memzone *mz;
-	uint16_t i, total_ports;
+	uint16_t i;
 
 	/* init EAL, parsing EAL args */
 	retval = rte_eal_init(argc, argv);
@@ -241,9 +253,6 @@ init(int argc, char *argv[])
 		return -1;
 	argc -= retval;
 	argv += retval;
-
-	/* get total number of ports */
-	total_ports = rte_eth_dev_count_total();
 
 	/* set up array for port data */
 	mz = rte_memzone_reserve(MZ_PORT_INFO, sizeof(*ports),
@@ -254,7 +263,7 @@ init(int argc, char *argv[])
 	ports = mz->addr;
 
 	/* parse additional, application arguments */
-	retval = parse_app_args(total_ports, argc, argv);
+	retval = parse_app_args(argc, argv);
 	if (retval != 0)
 		return -1;
 

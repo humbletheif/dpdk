@@ -1,10 +1,13 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
+ * Copyright 2017-2021, 2024 NXP
  *
  */
 #ifndef __FSL_DPCON_H
 #define __FSL_DPCON_H
+
+#include <rte_compat.h>
 
 /* Data Path Concentrator API
  * Contains initialization APIs and runtime control APIs for DPCON
@@ -19,11 +22,13 @@ struct fsl_mc_io;
  */
 #define DPCON_INVALID_DPIO_ID		(int)(-1)
 
+__rte_internal
 int dpcon_open(struct fsl_mc_io *mc_io,
 	       uint32_t cmd_flags,
 	       int dpcon_id,
 	       uint16_t *token);
 
+__rte_internal
 int dpcon_close(struct fsl_mc_io *mc_io,
 		uint32_t cmd_flags,
 		uint16_t token);
@@ -47,10 +52,12 @@ int dpcon_destroy(struct fsl_mc_io *mc_io,
 		  uint32_t cmd_flags,
 		  uint32_t obj_id);
 
+__rte_internal
 int dpcon_enable(struct fsl_mc_io *mc_io,
 		 uint32_t cmd_flags,
 		 uint16_t token);
 
+__rte_internal
 int dpcon_disable(struct fsl_mc_io *mc_io,
 		  uint32_t cmd_flags,
 		  uint16_t token);
@@ -60,6 +67,7 @@ int dpcon_is_enabled(struct fsl_mc_io *mc_io,
 		     uint16_t token,
 		     int *en);
 
+__rte_internal
 int dpcon_reset(struct fsl_mc_io *mc_io,
 		uint32_t cmd_flags,
 		uint16_t token);
@@ -76,29 +84,11 @@ struct dpcon_attr {
 	uint8_t num_priorities;
 };
 
+__rte_internal
 int dpcon_get_attributes(struct fsl_mc_io *mc_io,
 			 uint32_t cmd_flags,
 			 uint16_t token,
 			 struct dpcon_attr *attr);
-
-/**
- * struct dpcon_notification_cfg - Structure representing notification params
- * @dpio_id:	DPIO object ID; must be configured with a notification channel;
- *		to disable notifications set it to 'DPCON_INVALID_DPIO_ID';
- * @priority:	Priority selection within the DPIO channel; valid values
- *		are 0-7, depending on the number of priorities in that channel
- * @user_ctx:	User context value provided with each CDAN message
- */
-struct dpcon_notification_cfg {
-	int dpio_id;
-	uint8_t priority;
-	uint64_t user_ctx;
-};
-
-int dpcon_set_notification(struct fsl_mc_io *mc_io,
-			   uint32_t cmd_flags,
-			   uint16_t token,
-			   struct dpcon_notification_cfg *cfg);
 
 int dpcon_get_api_version(struct fsl_mc_io *mc_io,
 			  uint32_t cmd_flags,

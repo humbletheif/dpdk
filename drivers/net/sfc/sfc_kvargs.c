@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- * Copyright (c) 2016-2018 Solarflare Communications Inc.
- * All rights reserved.
+ * Copyright(c) 2019-2021 Xilinx, Inc.
+ * Copyright(c) 2016-2019 Solarflare Communications Inc.
  *
  * This software was jointly developed between OKTET Labs (under contract
  * for Solarflare) and Solarflare Communications, Inc.
@@ -22,12 +22,15 @@ sfc_kvargs_parse(struct sfc_adapter *sa)
 	struct rte_eth_dev *eth_dev = (sa)->eth_dev;
 	struct rte_devargs *devargs = eth_dev->device->devargs;
 	const char **params = (const char *[]){
+		SFC_KVARG_SWITCH_MODE,
+		SFC_KVARG_REPRESENTOR,
 		SFC_KVARG_STATS_UPDATE_PERIOD_MS,
 		SFC_KVARG_PERF_PROFILE,
 		SFC_KVARG_RX_DATAPATH,
 		SFC_KVARG_TX_DATAPATH,
 		SFC_KVARG_FW_VARIANT,
 		SFC_KVARG_RXD_WAIT_TIMEOUT_NS,
+		RTE_DEVARGS_KEY_CLASS,
 		NULL,
 	};
 
@@ -71,6 +74,16 @@ sfc_kvargs_process(struct sfc_adapter *sa, const char *key_match,
 }
 
 int
+sfc_kvargs_process_opt(struct sfc_adapter *sa, const char *key_match,
+		       arg_handler_t handler, void *opaque_arg)
+{
+	if (sa->kvargs == NULL)
+		return 0;
+
+	return -rte_kvargs_process_opt(sa->kvargs, key_match, handler, opaque_arg);
+}
+
+int
 sfc_kvarg_bool_handler(__rte_unused const char *key,
 		       const char *value_str, void *opaque)
 {
@@ -101,7 +114,7 @@ sfc_kvarg_long_handler(__rte_unused const char *key,
 	long value;
 	char *endptr;
 
-	if (!value_str || !opaque)
+	if (!opaque)
 		return -EINVAL;
 
 	value = strtol(value_str, &endptr, 0);

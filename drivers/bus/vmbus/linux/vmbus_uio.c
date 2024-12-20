@@ -11,10 +11,9 @@
 #include <sys/stat.h>
 #include <sys/mman.h>
 
+#include <rte_eal.h>
 #include <rte_log.h>
-#include <rte_bus.h>
 #include <rte_memory.h>
-#include <rte_eal_memconfig.h>
 #include <rte_common.h>
 #include <rte_malloc.h>
 #include <rte_bus_vmbus.h>
@@ -30,9 +29,12 @@ static void *vmbus_map_addr;
 /* Control interrupts */
 void vmbus_uio_irq_control(struct rte_vmbus_device *dev, int32_t onoff)
 {
-	if (write(dev->intr_handle.fd, &onoff, sizeof(onoff)) < 0) {
+	if ((rte_intr_fd_get(dev->intr_handle) < 0) ||
+	    write(rte_intr_fd_get(dev->intr_handle), &onoff,
+		  sizeof(onoff)) < 0) {
 		VMBUS_LOG(ERR, "cannot write to %d:%s",
-			dev->intr_handle.fd, strerror(errno));
+			  rte_intr_fd_get(dev->intr_handle),
+			  strerror(errno));
 	}
 }
 
@@ -41,7 +43,11 @@ int vmbus_uio_irq_read(struct rte_vmbus_device *dev)
 	int32_t count;
 	int cc;
 
-	cc = read(dev->intr_handle.fd, &count, sizeof(count));
+	if (rte_intr_fd_get(dev->intr_handle) < 0)
+		return -1;
+
+	cc = read(rte_intr_fd_get(dev->intr_handle), &count,
+		  sizeof(count));
 	if (cc < (int)sizeof(count)) {
 		if (cc < 0) {
 			VMBUS_LOG(ERR, "IRQ read failed %s",
@@ -61,15 +67,15 @@ vmbus_uio_free_resource(struct rte_vmbus_device *dev,
 {
 	rte_free(uio_res);
 
-	if (dev->intr_handle.uio_cfg_fd >= 0) {
-		close(dev->intr_handle.uio_cfg_fd);
-		dev->intr_handle.uio_cfg_fd = -1;
+	if (rte_intr_dev_fd_get(dev->intr_handle) >= 0) {
+		close(rte_intr_dev_fd_get(dev->intr_handle));
+		rte_intr_dev_fd_set(dev->intr_handle, -1);
 	}
 
-	if (dev->intr_handle.fd >= 0) {
-		close(dev->intr_handle.fd);
-		dev->intr_handle.fd = -1;
-		dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+	if (rte_intr_fd_get(dev->intr_handle) >= 0) {
+		close(rte_intr_fd_get(dev->intr_handle));
+		rte_intr_fd_set(dev->intr_handle, -1);
+		rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UNKNOWN);
 	}
 }
 
@@ -78,16 +84,22 @@ vmbus_uio_alloc_resource(struct rte_vmbus_device *dev,
 			 struct mapped_vmbus_resource **uio_res)
 {
 	char devname[PATH_MAX]; /* contains the /dev/uioX */
+	int fd;
 
 	/* save fd if in primary process */
 	snprintf(devname, sizeof(devname), "/dev/uio%u", dev->uio_num);
-	dev->intr_handle.fd = open(devname, O_RDWR);
-	if (dev->intr_handle.fd < 0) {
+	fd = open(devname, O_RDWR);
+	if (fd < 0) {
 		VMBUS_LOG(ERR, "Cannot open %s: %s",
 			devname, strerror(errno));
 		goto error;
 	}
-	dev->intr_handle.type = RTE_INTR_HANDLE_UIO_INTX;
+
+	if (rte_intr_fd_set(dev->intr_handle, fd))
+		goto error;
+
+	if (rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UIO_INTX))
+		goto error;
 
 	/* allocate the mapping details for secondary processes*/
 	*uio_res = rte_zmalloc("UIO_RES", sizeof(**uio_res), 0);
@@ -155,7 +167,7 @@ vmbus_uio_map_resource_by_index(struct rte_vmbus_device *dev, int idx,
 		vmbus_map_addr = vmbus_find_max_end_va();
 
 	/* offset is special in uio it indicates which resource */
-	offset = idx * PAGE_SIZE;
+	offset = idx * rte_mem_page_size();
 
 	mapaddr = vmbus_map_resource(vmbus_map_addr, fd, offset, size, flags);
 	close(fd);
@@ -166,7 +178,7 @@ vmbus_uio_map_resource_by_index(struct rte_vmbus_device *dev, int idx,
 	dev->resource[idx].addr = mapaddr;
 	vmbus_map_addr = RTE_PTR_ADD(mapaddr, size);
 
-	/* Record result of sucessful mapping for use by secondary */
+	/* Record result of successful mapping for use by secondary */
 	maps[idx].addr = mapaddr;
 	maps[idx].size = size;
 
@@ -202,7 +214,39 @@ static int vmbus_uio_map_subchan(const struct rte_vmbus_device *dev,
 	char ring_path[PATH_MAX];
 	size_t file_size;
 	struct stat sb;
+	void *mapaddr;
 	int fd;
+	struct mapped_vmbus_resource *uio_res;
+	int channel_idx;
+
+	uio_res = vmbus_uio_find_resource(dev);
+	if (!uio_res) {
+		VMBUS_LOG(ERR, "can not find resources for mapping subchan");
+		return -ENOMEM;
+	}
+
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+		if (uio_res->nb_subchannels >= UIO_MAX_SUBCHANNEL) {
+			VMBUS_LOG(ERR,
+				"exceeding max subchannels UIO_MAX_SUBCHANNEL(%d)",
+				UIO_MAX_SUBCHANNEL);
+			VMBUS_LOG(ERR, "Change UIO_MAX_SUBCHANNEL and recompile");
+			return -ENOMEM;
+		}
+	} else {
+		for (channel_idx = 0; channel_idx < uio_res->nb_subchannels;
+		     channel_idx++)
+			if (uio_res->subchannel_maps[channel_idx].relid ==
+					chan->relid)
+				break;
+		if (channel_idx == uio_res->nb_subchannels) {
+			VMBUS_LOG(ERR,
+				"couldn't find sub channel %d from shared mapping in primary",
+				chan->relid);
+			return -ENOMEM;
+		}
+		vmbus_map_addr = uio_res->subchannel_maps[channel_idx].addr;
+	}
 
 	snprintf(ring_path, sizeof(ring_path),
 		 "%s/%s/channels/%u/ring",
@@ -224,7 +268,7 @@ static int vmbus_uio_map_subchan(const struct rte_vmbus_device *dev,
 	}
 	file_size = sb.st_size;
 
-	if (file_size == 0 || (file_size & (PAGE_SIZE - 1))) {
+	if (file_size == 0 || (file_size & (rte_mem_page_size() - 1))) {
 		VMBUS_LOG(ERR, "incorrect size %s: %zu",
 			  ring_path, file_size);
 
@@ -232,15 +276,37 @@ static int vmbus_uio_map_subchan(const struct rte_vmbus_device *dev,
 		return -EINVAL;
 	}
 
-	*ring_size = file_size / 2;
-	*ring_buf = vmbus_map_resource(vmbus_map_addr, fd,
-				       0, sb.st_size, 0);
+	mapaddr = vmbus_map_resource(vmbus_map_addr, fd,
+				     0, file_size, 0);
 	close(fd);
 
-	if (ring_buf == MAP_FAILED)
+	if (mapaddr == MAP_FAILED)
 		return -EIO;
 
-	vmbus_map_addr = RTE_PTR_ADD(ring_buf, file_size);
+	if (rte_eal_process_type() == RTE_PROC_PRIMARY) {
+
+		/* Add this mapping to uio_res for use by secondary */
+		uio_res->subchannel_maps[uio_res->nb_subchannels].relid =
+			chan->relid;
+		uio_res->subchannel_maps[uio_res->nb_subchannels].addr =
+			mapaddr;
+		uio_res->subchannel_maps[uio_res->nb_subchannels].size =
+			file_size;
+		uio_res->nb_subchannels++;
+
+		vmbus_map_addr = RTE_PTR_ADD(mapaddr, file_size);
+	} else {
+		if (mapaddr != vmbus_map_addr) {
+			VMBUS_LOG(ERR, "failed to map channel %d to addr %p",
+					chan->relid, mapaddr);
+			vmbus_unmap_resource(mapaddr, file_size);
+			return -EIO;
+		}
+	}
+
+	*ring_size = file_size / 2;
+	*ring_buf = mapaddr;
+
 	return 0;
 }
 

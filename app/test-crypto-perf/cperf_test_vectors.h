@@ -68,6 +68,77 @@ struct cperf_test_vector {
 		uint32_t aead_offset;
 		uint32_t aead_length;
 	} data;
+
+	struct {
+		uint8_t *mod;
+		uint8_t *exp;
+		uint32_t mlen;
+		uint32_t elen;
+	} modex;
+
+	struct {
+		uint8_t *sign_r;
+		uint8_t *sign_s;
+		uint8_t *message;
+		uint8_t *cipher;
+		uint32_t sign_len;
+		uint32_t msg_len;
+		uint32_t cipher_len;
+	} sm2;
+};
+
+struct cperf_modex_test_data {
+#define DATA_SIZE  1024
+	struct {
+		uint8_t data[DATA_SIZE];
+		uint16_t len;
+	} base;
+	struct {
+		uint8_t data[DATA_SIZE];
+		uint16_t len;
+	} exponent;
+	struct {
+		uint8_t data[DATA_SIZE];
+		uint16_t len;
+	} modulus;
+	struct {
+		uint8_t data[DATA_SIZE];
+		uint16_t len;
+	} result;
+};
+
+struct cperf_ecdsa_test_data {
+	rte_crypto_param pubkey_qx;
+	rte_crypto_param pubkey_qy;
+	rte_crypto_param pkey;
+	rte_crypto_param k;
+	rte_crypto_param sign_r;
+	rte_crypto_param sign_s;
+	rte_crypto_param message;
+	int curve;
+};
+
+struct cperf_eddsa_test_data {
+	rte_crypto_param pubkey;
+	rte_crypto_param pkey;
+	rte_crypto_param sign;
+	rte_crypto_param message;
+	int curve;
+	int instance;
+};
+
+struct cperf_sm2_test_data {
+	rte_crypto_param pubkey_qx;
+	rte_crypto_param pubkey_qy;
+	rte_crypto_param pkey;
+	rte_crypto_param k;
+	rte_crypto_param sign_r;
+	rte_crypto_param sign_s;
+	rte_crypto_param id;
+	rte_crypto_param cipher;
+	rte_crypto_param message;
+	rte_crypto_param digest;
+	int curve;
 };
 
 struct cperf_test_vector*
@@ -82,5 +153,10 @@ extern uint8_t iv[];
 extern uint8_t aad[];
 
 extern uint8_t digest[2048];
+
+extern struct cperf_modex_test_data modex_perf_data[10];
+extern struct cperf_ecdsa_test_data secp256r1_perf_data;
+extern struct cperf_eddsa_test_data ed25519_perf_data;
+extern struct cperf_sm2_test_data sm2_perf_data;
 
 #endif

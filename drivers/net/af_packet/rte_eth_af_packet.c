@@ -6,20 +6,26 @@
  * All rights reserved.
  */
 
+#include <rte_common.h>
+#include <rte_string_fns.h>
 #include <rte_mbuf.h>
-#include <rte_ethdev_driver.h>
-#include <rte_ethdev_vdev.h>
+#include <ethdev_driver.h>
+#include <ethdev_vdev.h>
 #include <rte_malloc.h>
 #include <rte_kvargs.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 
+#include <errno.h>
 #include <linux/if_ether.h>
 #include <linux/if_packet.h>
 #include <arpa/inet.h>
 #include <net/if.h>
+#include <net/if_arp.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
 #include <poll.h>
@@ -31,13 +37,13 @@
 #define ETH_AF_PACKET_FRAMECOUNT_ARG	"framecnt"
 #define ETH_AF_PACKET_QDISC_BYPASS_ARG	"qdisc_bypass"
 
-#define DFLT_BLOCK_SIZE		(1 << 12)
 #define DFLT_FRAME_SIZE		(1 << 11)
 #define DFLT_FRAME_COUNT	(1 << 9)
 
-#define RTE_PMD_AF_PACKET_MAX_RINGS 16
+static uint64_t timestamp_dynflag;
+static int timestamp_dynfield_offset = -1;
 
-struct pkt_rx_queue {
+struct __rte_cache_aligned pkt_rx_queue {
 	int sockfd;
 
 	struct iovec *rd;
@@ -47,13 +53,14 @@ struct pkt_rx_queue {
 
 	struct rte_mempool *mb_pool;
 	uint16_t in_port;
+	uint8_t vlan_strip;
+	uint8_t timestamp_offloading;
 
 	volatile unsigned long rx_pkts;
-	volatile unsigned long err_pkts;
 	volatile unsigned long rx_bytes;
 };
 
-struct pkt_tx_queue {
+struct __rte_cache_aligned pkt_tx_queue {
 	int sockfd;
 	unsigned int frame_data_size;
 
@@ -72,12 +79,14 @@ struct pmd_internals {
 
 	int if_index;
 	char *if_name;
-	struct ether_addr eth_addr;
+	struct rte_ether_addr eth_addr;
 
 	struct tpacket_req req;
 
-	struct pkt_rx_queue rx_queue[RTE_PMD_AF_PACKET_MAX_RINGS];
-	struct pkt_tx_queue tx_queue[RTE_PMD_AF_PACKET_MAX_RINGS];
+	struct pkt_rx_queue *rx_queue;
+	struct pkt_tx_queue *tx_queue;
+	uint8_t vlan_strip;
+	uint8_t timestamp_offloading;
 };
 
 static const char *valid_arguments[] = {
@@ -91,17 +100,21 @@ static const char *valid_arguments[] = {
 };
 
 static struct rte_eth_link pmd_link = {
-	.link_speed = ETH_SPEED_NUM_10G,
-	.link_duplex = ETH_LINK_FULL_DUPLEX,
-	.link_status = ETH_LINK_DOWN,
-	.link_autoneg = ETH_LINK_FIXED,
+	.link_speed = RTE_ETH_SPEED_NUM_10G,
+	.link_duplex = RTE_ETH_LINK_FULL_DUPLEX,
+	.link_status = RTE_ETH_LINK_DOWN,
+	.link_autoneg = RTE_ETH_LINK_FIXED,
 };
 
-static int af_packet_logtype;
+RTE_LOG_REGISTER_DEFAULT(af_packet_logtype, NOTICE);
+#define RTE_LOGTYPE_AFPACKET af_packet_logtype
 
-#define PMD_LOG(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, af_packet_logtype, \
-		"%s(): " fmt "\n", __func__, ##args)
+#define PMD_LOG(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, AFPACKET, "%s(): ", __func__, __VA_ARGS__)
+
+#define PMD_LOG_ERRNO(level, fmt, ...) \
+	RTE_LOG_LINE(level, AFPACKET, "%s(): " fmt ":%s", __func__, \
+		## __VA_ARGS__, strerror(errno))
 
 static uint16_t
 eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
@@ -143,7 +156,20 @@ eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		/* check for vlan info */
 		if (ppd->tp_status & TP_STATUS_VLAN_VALID) {
 			mbuf->vlan_tci = ppd->tp_vlan_tci;
-			mbuf->ol_flags |= (PKT_RX_VLAN | PKT_RX_VLAN_STRIPPED);
+			mbuf->ol_flags |= (RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED);
+
+			if (!pkt_q->vlan_strip && rte_vlan_insert(&mbuf))
+				PMD_LOG(ERR, "Failed to reinsert VLAN tag");
+		}
+
+		/* add kernel provided timestamp when offloading is enabled */
+		if (pkt_q->timestamp_offloading) {
+			/* since TPACKET_V2 timestamps are provided in nanoseconds resolution */
+			*RTE_MBUF_DYNFIELD(mbuf, timestamp_dynfield_offset,
+				rte_mbuf_timestamp_t *) =
+					(uint64_t)ppd->tp_sec * 1000000000 + ppd->tp_nsec;
+
+			mbuf->ol_flags |= timestamp_dynflag;
 		}
 
 		/* release incoming frame and advance ring buffer */
@@ -161,6 +187,26 @@ eth_af_packet_rx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	pkt_q->rx_pkts += num_rx;
 	pkt_q->rx_bytes += num_rx_bytes;
 	return num_rx;
+}
+
+/*
+ * Check if there is an available frame in the ring
+ */
+static inline bool
+tx_ring_status_available(uint32_t tp_status)
+{
+	/*
+	 * We eliminate the timestamp status from the packet status.
+	 * This should only matter if timestamping is enabled on the socket,
+	 * but there is a bug in the kernel which is fixed in newer releases.
+	 *
+	 * See the following kernel commit for reference:
+	 *     commit 171c3b151118a2fe0fc1e2a9d1b5a1570cfe82d2
+	 *     net: packetmmap: fix only tx timestamp on request
+	 */
+	tp_status &= ~(TP_STATUS_TS_SOFTWARE | TP_STATUS_TS_RAW_HARDWARE);
+
+	return tp_status == TP_STATUS_AVAILABLE;
 }
 
 /*
@@ -200,7 +246,7 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		}
 
 		/* insert vlan info if necessary */
-		if (mbuf->ol_flags & PKT_TX_VLAN_PKT) {
+		if (mbuf->ol_flags & RTE_MBUF_F_TX_VLAN) {
 			if (rte_vlan_insert(&mbuf)) {
 				rte_pktmbuf_free(mbuf);
 				continue;
@@ -208,8 +254,30 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 		}
 
 		/* point at the next incoming frame */
-		if ((ppd->tp_status != TP_STATUS_AVAILABLE) &&
-		    (poll(&pfd, 1, -1) < 0))
+		if (!tx_ring_status_available(ppd->tp_status)) {
+			if (poll(&pfd, 1, -1) < 0)
+				break;
+
+			/* poll() can return POLLERR if the interface is down */
+			if (pfd.revents & POLLERR)
+				break;
+		}
+
+		/*
+		 * poll() will almost always return POLLOUT, even if there
+		 * are no extra buffers available
+		 *
+		 * This happens, because packet_poll() calls datagram_poll()
+		 * which checks the space left in the socket buffer and,
+		 * in the case of packet_mmap, the default socket buffer length
+		 * doesn't match the requested size for the tx_ring.
+		 * As such, there is almost always space left in socket buffer,
+		 * which doesn't seem to be correlated to the requested size
+		 * for the tx_ring in packet_mmap.
+		 *
+		 * This results in poll() returning POLLOUT.
+		 */
+		if (!tx_ring_status_available(ppd->tp_status))
 			break;
 
 		/* copy the tx frame data */
@@ -239,8 +307,14 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 	}
 
 	/* kick-off transmits */
-	if (sendto(pkt_q->sockfd, NULL, 0, MSG_DONTWAIT, NULL, 0) == -1) {
-		/* error sending -- no packets transmitted */
+	if (sendto(pkt_q->sockfd, NULL, 0, MSG_DONTWAIT, NULL, 0) == -1 &&
+			errno != ENOBUFS && errno != EAGAIN) {
+		/*
+		 * In case of a ENOBUFS/EAGAIN error all of the enqueued
+		 * packets will be considered successful even though only some
+		 * are sent.
+		 */
+
 		num_tx = 0;
 		num_tx_bytes = 0;
 	}
@@ -255,14 +329,31 @@ eth_af_packet_tx(void *queue, struct rte_mbuf **bufs, uint16_t nb_pkts)
 static int
 eth_dev_start(struct rte_eth_dev *dev)
 {
-	dev->data->dev_link.link_status = ETH_LINK_UP;
+	struct pmd_internals *internals = dev->data->dev_private;
+	uint16_t i;
+
+	if (internals->timestamp_offloading) {
+		/* Register mbuf field and flag for Rx timestamp */
+		int rc = rte_mbuf_dyn_rx_timestamp_register(&timestamp_dynfield_offset,
+				&timestamp_dynflag);
+		if (rc) {
+			PMD_LOG(ERR, "Cannot register mbuf field/flag for timestamp");
+			return rc;
+		}
+	}
+
+	dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
+	for (i = 0; i < internals->nb_queues; i++) {
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STARTED;
+	}
 	return 0;
 }
 
 /*
  * This function gets called when the current port gets stopped.
  */
-static void
+static int
 eth_dev_stop(struct rte_eth_dev *dev)
 {
 	unsigned i;
@@ -283,28 +374,43 @@ eth_dev_stop(struct rte_eth_dev *dev)
 
 		internals->rx_queue[i].sockfd = -1;
 		internals->tx_queue[i].sockfd = -1;
+		dev->data->rx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
+		dev->data->tx_queue_state[i] = RTE_ETH_QUEUE_STATE_STOPPED;
 	}
 
-	dev->data->dev_link.link_status = ETH_LINK_DOWN;
+	dev->data->dev_link.link_status = RTE_ETH_LINK_DOWN;
+	return 0;
 }
 
 static int
 eth_dev_configure(struct rte_eth_dev *dev __rte_unused)
 {
+	struct rte_eth_conf *dev_conf = &dev->data->dev_conf;
+	const struct rte_eth_rxmode *rxmode = &dev_conf->rxmode;
+	struct pmd_internals *internals = dev->data->dev_private;
+
+	internals->vlan_strip = !!(rxmode->offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP);
+	internals->timestamp_offloading = !!(rxmode->offloads & RTE_ETH_RX_OFFLOAD_TIMESTAMP);
 	return 0;
 }
 
-static void
+static int
 eth_dev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 {
 	struct pmd_internals *internals = dev->data->dev_private;
 
 	dev_info->if_index = internals->if_index;
 	dev_info->max_mac_addrs = 1;
-	dev_info->max_rx_pktlen = (uint32_t)ETH_FRAME_LEN;
+	dev_info->max_rx_pktlen = RTE_ETHER_MAX_LEN;
 	dev_info->max_rx_queues = (uint16_t)internals->nb_queues;
 	dev_info->max_tx_queues = (uint16_t)internals->nb_queues;
 	dev_info->min_rx_bufsize = 0;
+	dev_info->tx_offload_capa = RTE_ETH_TX_OFFLOAD_MULTI_SEGS |
+		RTE_ETH_TX_OFFLOAD_VLAN_INSERT;
+	dev_info->rx_offload_capa = RTE_ETH_RX_OFFLOAD_VLAN_STRIP |
+		RTE_ETH_RX_OFFLOAD_TIMESTAMP;
+
+	return 0;
 }
 
 static int
@@ -328,10 +434,9 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *igb_stats)
 	        internal->nb_queues : RTE_ETHDEV_QUEUE_STAT_CNTRS);
 	for (i = 0; i < imax; i++) {
 		igb_stats->q_opackets[i] = internal->tx_queue[i].tx_pkts;
-		igb_stats->q_errors[i] = internal->tx_queue[i].err_pkts;
 		igb_stats->q_obytes[i] = internal->tx_queue[i].tx_bytes;
 		tx_total += igb_stats->q_opackets[i];
-		tx_err_total += igb_stats->q_errors[i];
+		tx_err_total += internal->tx_queue[i].err_pkts;
 		tx_bytes_total += igb_stats->q_obytes[i];
 	}
 
@@ -343,7 +448,7 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *igb_stats)
 	return 0;
 }
 
-static void
+static int
 eth_stats_reset(struct rte_eth_dev *dev)
 {
 	unsigned i;
@@ -359,22 +464,57 @@ eth_stats_reset(struct rte_eth_dev *dev)
 		internal->tx_queue[i].err_pkts = 0;
 		internal->tx_queue[i].tx_bytes = 0;
 	}
-}
 
-static void
-eth_dev_close(struct rte_eth_dev *dev __rte_unused)
-{
-}
-
-static void
-eth_queue_release(void *q __rte_unused)
-{
+	return 0;
 }
 
 static int
-eth_link_update(struct rte_eth_dev *dev __rte_unused,
+eth_dev_close(struct rte_eth_dev *dev)
+{
+	struct pmd_internals *internals;
+	struct tpacket_req *req;
+	unsigned int q;
+
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return 0;
+
+	PMD_LOG(INFO, "Closing AF_PACKET ethdev on NUMA socket %u",
+		rte_socket_id());
+
+	internals = dev->data->dev_private;
+	req = &internals->req;
+	for (q = 0; q < internals->nb_queues; q++) {
+		munmap(internals->rx_queue[q].map,
+			2 * req->tp_block_size * req->tp_block_nr);
+		rte_free(internals->rx_queue[q].rd);
+		rte_free(internals->tx_queue[q].rd);
+	}
+	free(internals->if_name);
+	rte_free(internals->rx_queue);
+	rte_free(internals->tx_queue);
+
+	/* mac_addrs must not be freed alone because part of dev_private */
+	dev->data->mac_addrs = NULL;
+	return 0;
+}
+
+static int
+eth_link_update(struct rte_eth_dev *dev,
                 int wait_to_complete __rte_unused)
 {
+	const struct pmd_internals *internals = dev->data->dev_private;
+	struct rte_eth_link *dev_link = &dev->data->dev_link;
+	int sockfd = internals->rx_queue[0].sockfd;
+	struct ifreq ifr = { };
+
+	if (sockfd == -1)
+		return 0;
+
+	strlcpy(ifr.ifr_name, internals->if_name, IFNAMSIZ);
+	if (ioctl(sockfd, SIOCGIFFLAGS, &ifr) < 0)
+		return -errno;
+	dev_link->link_status = (ifr.ifr_flags & IFF_RUNNING) ?
+		RTE_ETH_LINK_UP : RTE_ETH_LINK_DOWN;
 	return 0;
 }
 
@@ -407,6 +547,8 @@ eth_rx_queue_setup(struct rte_eth_dev *dev,
 
 	dev->data->rx_queues[rx_queue_id] = pkt_q;
 	pkt_q->in_port = dev->data->port_id;
+	pkt_q->vlan_strip = internals->vlan_strip;
+	pkt_q->timestamp_offloading = internals->timestamp_offloading;
 
 	return 0;
 }
@@ -442,7 +584,7 @@ eth_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	if (s < 0)
 		return -EINVAL;
 
-	snprintf(ifr.ifr_name, IFNAMSIZ, "%s", internals->if_name);
+	strlcpy(ifr.ifr_name, internals->if_name, IFNAMSIZ);
 	ret = ioctl(s, SIOCSIFMTU, &ifr);
 	close(s);
 
@@ -452,41 +594,73 @@ eth_dev_mtu_set(struct rte_eth_dev *dev, uint16_t mtu)
 	return 0;
 }
 
-static void
+static int
+eth_dev_macaddr_set(struct rte_eth_dev *dev, struct rte_ether_addr *addr)
+{
+	struct pmd_internals *internals = dev->data->dev_private;
+	struct ifreq ifr = { };
+	int sockfd = internals->rx_queue[0].sockfd;
+	int ret;
+
+	if (sockfd == -1) {
+		PMD_LOG(ERR, "receive socket not found");
+		return -EINVAL;
+	}
+
+	strlcpy(ifr.ifr_name, internals->if_name, IFNAMSIZ);
+	ifr.ifr_hwaddr.sa_family = ARPHRD_ETHER;
+	memcpy(ifr.ifr_hwaddr.sa_data, addr, sizeof(*addr));
+	ret = ioctl(sockfd, SIOCSIFHWADDR, &ifr);
+
+	if (ret < 0) {
+		PMD_LOG_ERRNO(ERR, "ioctl(SIOCSIFHWADDR) failed");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
+static int
 eth_dev_change_flags(char *if_name, uint32_t flags, uint32_t mask)
 {
 	struct ifreq ifr;
+	int ret = 0;
 	int s;
 
 	s = socket(PF_INET, SOCK_DGRAM, 0);
 	if (s < 0)
-		return;
+		return -errno;
 
-	snprintf(ifr.ifr_name, IFNAMSIZ, "%s", if_name);
-	if (ioctl(s, SIOCGIFFLAGS, &ifr) < 0)
+	strlcpy(ifr.ifr_name, if_name, IFNAMSIZ);
+	if (ioctl(s, SIOCGIFFLAGS, &ifr) < 0) {
+		ret = -errno;
 		goto out;
+	}
 	ifr.ifr_flags &= mask;
 	ifr.ifr_flags |= flags;
-	if (ioctl(s, SIOCSIFFLAGS, &ifr) < 0)
+	if (ioctl(s, SIOCSIFFLAGS, &ifr) < 0) {
+		ret = -errno;
 		goto out;
+	}
 out:
 	close(s);
+	return ret;
 }
 
-static void
+static int
 eth_dev_promiscuous_enable(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *internals = dev->data->dev_private;
 
-	eth_dev_change_flags(internals->if_name, IFF_PROMISC, ~0);
+	return eth_dev_change_flags(internals->if_name, IFF_PROMISC, ~0);
 }
 
-static void
+static int
 eth_dev_promiscuous_disable(struct rte_eth_dev *dev)
 {
 	struct pmd_internals *internals = dev->data->dev_private;
 
-	eth_dev_change_flags(internals->if_name, 0, ~IFF_PROMISC);
+	return eth_dev_change_flags(internals->if_name, 0, ~IFF_PROMISC);
 }
 
 static const struct eth_dev_ops ops = {
@@ -495,13 +669,12 @@ static const struct eth_dev_ops ops = {
 	.dev_close = eth_dev_close,
 	.dev_configure = eth_dev_configure,
 	.dev_infos_get = eth_dev_info,
+	.mac_addr_set = eth_dev_macaddr_set,
 	.mtu_set = eth_dev_mtu_set,
 	.promiscuous_enable = eth_dev_promiscuous_enable,
 	.promiscuous_disable = eth_dev_promiscuous_disable,
 	.rx_queue_setup = eth_rx_queue_setup,
 	.tx_queue_setup = eth_tx_queue_setup,
-	.rx_queue_release = eth_queue_release,
-	.tx_queue_release = eth_queue_release,
 	.link_update = eth_link_update,
 	.stats_get = eth_stats_get,
 	.stats_reset = eth_stats_reset,
@@ -518,7 +691,7 @@ open_packet_iface(const char *key __rte_unused,
 	int *sockfd = extra_args;
 
 	/* Open an AF_PACKET socket... */
-	*sockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+	*sockfd = socket(AF_PACKET, SOCK_RAW, 0);
 	if (*sockfd == -1) {
 		PMD_LOG(ERR, "Could not open AF_PACKET socket");
 		return -1;
@@ -526,8 +699,6 @@ open_packet_iface(const char *key __rte_unused,
 
 	return 0;
 }
-
-static struct rte_vdev_driver pmd_af_packet_drv;
 
 static int
 rte_pmd_init_internals(struct rte_vdev_device *dev,
@@ -581,9 +752,24 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 	if (*internals == NULL)
 		return -1;
 
+
+	(*internals)->rx_queue = rte_calloc_socket("af_packet_rx",
+						nb_queues,
+						sizeof(struct pkt_rx_queue),
+						0, numa_node);
+	(*internals)->tx_queue = rte_calloc_socket("af_packet_tx",
+						nb_queues,
+						sizeof(struct pkt_tx_queue),
+						0, numa_node);
+	if (!(*internals)->rx_queue || !(*internals)->tx_queue) {
+		goto free_internals;
+	}
+
 	for (q = 0; q < nb_queues; q++) {
 		(*internals)->rx_queue[q].map = MAP_FAILED;
 		(*internals)->tx_queue[q].map = MAP_FAILED;
+		(*internals)->rx_queue[q].sockfd = -1;
+		(*internals)->tx_queue[q].sockfd = -1;
 	}
 
 	req = &((*internals)->req);
@@ -601,24 +787,20 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 		PMD_LOG(ERR,
 			"%s: I/F name too long (%s)",
 			name, pair->value);
-		return -1;
+		goto free_internals;
 	}
 	if (ioctl(sockfd, SIOCGIFINDEX, &ifr) == -1) {
-		PMD_LOG(ERR,
-			"%s: ioctl failed (SIOCGIFINDEX)",
-		        name);
-		return -1;
+		PMD_LOG_ERRNO(ERR, "%s: ioctl failed (SIOCGIFINDEX)", name);
+		goto free_internals;
 	}
 	(*internals)->if_name = strdup(pair->value);
 	if ((*internals)->if_name == NULL)
-		return -1;
+		goto free_internals;
 	(*internals)->if_index = ifr.ifr_ifindex;
 
 	if (ioctl(sockfd, SIOCGIFHWADDR, &ifr) == -1) {
-		PMD_LOG(ERR,
-			"%s: ioctl failed (SIOCGIFHWADDR)",
-		        name);
-		return -1;
+		PMD_LOG_ERRNO(ERR, "%s: ioctl failed (SIOCGIFHWADDR)", name);
+		goto free_internals;
 	}
 	memcpy(&(*internals)->eth_addr, ifr.ifr_hwaddr.sa_data, ETH_ALEN);
 
@@ -637,19 +819,19 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 
 	for (q = 0; q < nb_queues; q++) {
 		/* Open an AF_PACKET socket for this queue... */
-		qsockfd = socket(AF_PACKET, SOCK_RAW, htons(ETH_P_ALL));
+		qsockfd = socket(AF_PACKET, SOCK_RAW, 0);
 		if (qsockfd == -1) {
-			PMD_LOG(ERR,
+			PMD_LOG_ERRNO(ERR,
 				"%s: could not open AF_PACKET socket",
-			        name);
-			return -1;
+				name);
+			goto error;
 		}
 
 		tpver = TPACKET_V2;
 		rc = setsockopt(qsockfd, SOL_PACKET, PACKET_VERSION,
 				&tpver, sizeof(tpver));
 		if (rc == -1) {
-			PMD_LOG(ERR,
+			PMD_LOG_ERRNO(ERR,
 				"%s: could not set PACKET_VERSION on AF_PACKET socket for %s",
 				name, pair->value);
 			goto error;
@@ -659,28 +841,28 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 		rc = setsockopt(qsockfd, SOL_PACKET, PACKET_LOSS,
 				&discard, sizeof(discard));
 		if (rc == -1) {
-			PMD_LOG(ERR,
+			PMD_LOG_ERRNO(ERR,
 				"%s: could not set PACKET_LOSS on AF_PACKET socket for %s",
 				name, pair->value);
 			goto error;
 		}
 
+		if (qdisc_bypass) {
 #if defined(PACKET_QDISC_BYPASS)
-		rc = setsockopt(qsockfd, SOL_PACKET, PACKET_QDISC_BYPASS,
-				&qdisc_bypass, sizeof(qdisc_bypass));
-		if (rc == -1) {
-			PMD_LOG(ERR,
-				"%s: could not set PACKET_QDISC_BYPASS on AF_PACKET socket for %s",
-				name, pair->value);
-			goto error;
-		}
-#else
-		RTE_SET_USED(qdisc_bypass);
+			rc = setsockopt(qsockfd, SOL_PACKET, PACKET_QDISC_BYPASS,
+					&qdisc_bypass, sizeof(qdisc_bypass));
+			if (rc == -1) {
+				PMD_LOG_ERRNO(ERR,
+					"%s: could not set PACKET_QDISC_BYPASS on AF_PACKET socket for %s",
+					name, pair->value);
+				goto error;
+			}
 #endif
+		}
 
 		rc = setsockopt(qsockfd, SOL_PACKET, PACKET_RX_RING, req, sizeof(*req));
 		if (rc == -1) {
-			PMD_LOG(ERR,
+			PMD_LOG_ERRNO(ERR,
 				"%s: could not set PACKET_RX_RING on AF_PACKET socket for %s",
 				name, pair->value);
 			goto error;
@@ -688,7 +870,7 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 
 		rc = setsockopt(qsockfd, SOL_PACKET, PACKET_TX_RING, req, sizeof(*req));
 		if (rc == -1) {
-			PMD_LOG(ERR,
+			PMD_LOG_ERRNO(ERR,
 				"%s: could not set PACKET_TX_RING on AF_PACKET "
 				"socket for %s", name, pair->value);
 			goto error;
@@ -701,7 +883,7 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 				    PROT_READ | PROT_WRITE, MAP_SHARED | MAP_LOCKED,
 				    qsockfd, 0);
 		if (rx_queue->map == MAP_FAILED) {
-			PMD_LOG(ERR,
+			PMD_LOG_ERRNO(ERR,
 				"%s: call to mmap failed on AF_PACKET socket for %s",
 				name, pair->value);
 			goto error;
@@ -738,9 +920,9 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 
 		rc = bind(qsockfd, (const struct sockaddr*)&sockaddr, sizeof(sockaddr));
 		if (rc == -1) {
-			PMD_LOG(ERR,
+			PMD_LOG_ERRNO(ERR,
 				"%s: could not bind AF_PACKET socket to %s",
-			        name, pair->value);
+				name, pair->value);
 			goto error;
 		}
 
@@ -748,9 +930,9 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 		rc = setsockopt(qsockfd, SOL_PACKET, PACKET_FANOUT,
 				&fanout_arg, sizeof(fanout_arg));
 		if (rc == -1) {
-			PMD_LOG(ERR,
-				"%s: could not set PACKET_FANOUT on AF_PACKET socket "
-				"for %s", name, pair->value);
+			PMD_LOG_ERRNO(ERR,
+				"%s: could not set PACKET_FANOUT on AF_PACKET socket for %s",
+				name, pair->value);
 			goto error;
 		}
 #endif
@@ -777,6 +959,7 @@ rte_pmd_init_internals(struct rte_vdev_device *dev,
 	data->nb_tx_queues = (uint16_t)nb_queues;
 	data->dev_link = pmd_link;
 	data->mac_addrs = &(*internals)->eth_addr;
+	data->dev_flags |= RTE_ETH_DEV_AUTOFILL_QUEUE_XSTATS;
 
 	(*eth_dev)->dev_ops = &ops;
 
@@ -786,15 +969,19 @@ error:
 	if (qsockfd != -1)
 		close(qsockfd);
 	for (q = 0; q < nb_queues; q++) {
-		munmap((*internals)->rx_queue[q].map,
-		       2 * req->tp_block_size * req->tp_block_nr);
+		if ((*internals)->rx_queue[q].map != MAP_FAILED)
+			munmap((*internals)->rx_queue[q].map,
+			       2 * req->tp_block_size * req->tp_block_nr);
 
 		rte_free((*internals)->rx_queue[q].rd);
 		rte_free((*internals)->tx_queue[q].rd);
-		if (((*internals)->rx_queue[q].sockfd != 0) &&
+		if (((*internals)->rx_queue[q].sockfd >= 0) &&
 			((*internals)->rx_queue[q].sockfd != qsockfd))
 			close((*internals)->rx_queue[q].sockfd);
 	}
+free_internals:
+	rte_free((*internals)->rx_queue);
+	rte_free((*internals)->tx_queue);
 	free((*internals)->if_name);
 	rte_free(*internals);
 	return -1;
@@ -811,7 +998,7 @@ rte_eth_from_packet(struct rte_vdev_device *dev,
 	struct rte_kvargs_pair *pair = NULL;
 	unsigned k_idx;
 	unsigned int blockcount;
-	unsigned int blocksize = DFLT_BLOCK_SIZE;
+	unsigned int blocksize;
 	unsigned int framesize = DFLT_FRAME_SIZE;
 	unsigned int framecount = DFLT_FRAME_COUNT;
 	unsigned int qpairs = 1;
@@ -821,6 +1008,8 @@ rte_eth_from_packet(struct rte_vdev_device *dev,
 	if (*sockfd < 0)
 		return -1;
 
+	blocksize = getpagesize();
+
 	/*
 	 * Walk arguments for configurable settings
 	 */
@@ -828,8 +1017,7 @@ rte_eth_from_packet(struct rte_vdev_device *dev,
 		pair = &kvlist->pairs[k_idx];
 		if (strstr(pair->key, ETH_AF_PACKET_NUM_Q_ARG) != NULL) {
 			qpairs = atoi(pair->value);
-			if (qpairs < 1 ||
-			    qpairs > RTE_PMD_AF_PACKET_MAX_RINGS) {
+			if (qpairs < 1) {
 				PMD_LOG(ERR,
 					"%s: invalid qpairs value",
 				        name);
@@ -970,12 +1158,7 @@ exit:
 static int
 rte_pmd_af_packet_remove(struct rte_vdev_device *dev)
 {
-	struct rte_eth_dev *eth_dev = NULL;
-	struct pmd_internals *internals;
-	unsigned q;
-
-	PMD_LOG(INFO, "Closing AF_PACKET ethdev on numa socket %u",
-		rte_socket_id());
+	struct rte_eth_dev *eth_dev;
 
 	if (dev == NULL)
 		return -1;
@@ -983,21 +1166,9 @@ rte_pmd_af_packet_remove(struct rte_vdev_device *dev)
 	/* find the ethdev entry */
 	eth_dev = rte_eth_dev_allocated(rte_vdev_device_name(dev));
 	if (eth_dev == NULL)
-		return -1;
+		return 0; /* port already released */
 
-	/* mac_addrs must not be freed alone because part of dev_private */
-	eth_dev->data->mac_addrs = NULL;
-
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return rte_eth_dev_release_port(eth_dev);
-
-	internals = eth_dev->data->dev_private;
-	for (q = 0; q < internals->nb_queues; q++) {
-		rte_free(internals->rx_queue[q].rd);
-		rte_free(internals->tx_queue[q].rd);
-	}
-	free(internals->if_name);
-
+	eth_dev_close(eth_dev);
 	rte_eth_dev_release_port(eth_dev);
 
 	return 0;
@@ -1017,10 +1188,3 @@ RTE_PMD_REGISTER_PARAM_STRING(net_af_packet,
 	"framesz=<int> "
 	"framecnt=<int> "
 	"qdisc_bypass=<0|1>");
-
-RTE_INIT(af_packet_init_log)
-{
-	af_packet_logtype = rte_log_register("pmd.net.packet");
-	if (af_packet_logtype >= 0)
-		rte_log_set_level(af_packet_logtype, RTE_LOG_NOTICE);
-}

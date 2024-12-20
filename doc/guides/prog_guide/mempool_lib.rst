@@ -1,10 +1,8 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2014 Intel Corporation.
 
-.. _Mempool_Library:
-
-Mempool Library
-===============
+Memory Pool Library
+===================
 
 A memory pool is an allocator of a fixed-sized object.
 In the DPDK, it is identified by name and uses a mempool handler to store free objects.
@@ -12,25 +10,30 @@ The default mempool handler is ring based.
 It provides some other optional services such as a per-core object cache and
 an alignment helper to ensure that objects are padded to spread them equally on all DRAM or DDR3 channels.
 
-This library is used by the :ref:`Mbuf Library <Mbuf_Library>`.
+This library is used by the :doc:`mbuf_lib`.
 
 Cookies
 -------
 
-In debug mode (CONFIG_RTE_LIBRTE_MEMPOOL_DEBUG is enabled), cookies are added at the beginning and end of allocated blocks.
+In debug mode, cookies are added at the beginning and end of allocated blocks.
 The allocated objects then contain overwrite protection fields to help debugging buffer overflows.
+
+Debug mode is disabled by default,
+but can be enabled by setting ``RTE_LIBRTE_MEMPOOL_DEBUG`` in ``config/rte_config.h``.
 
 Stats
 -----
 
-In debug mode (CONFIG_RTE_LIBRTE_MEMPOOL_DEBUG is enabled),
-statistics about get from/put in the pool are stored in the mempool structure.
+In stats mode, statistics about get from/put in the pool are stored in the mempool structure.
 Statistics are per-lcore to avoid concurrent access to statistics counters.
 
-Memory Alignment Constraints
-----------------------------
+Stats mode is disabled by default,
+but can be enabled by setting ``RTE_LIBRTE_MEMPOOL_STATS`` in ``config/rte_config.h``.
 
-Depending on hardware memory configuration, performance can be greatly improved by adding a specific padding between objects.
+Memory Alignment Constraints on x86 architecture
+------------------------------------------------
+
+Depending on hardware memory configuration on X86 architecture, performance can be greatly improved by adding a specific padding between objects.
 The objective is to ensure that the beginning of each object starts on a different channel and rank in memory so that all channels are equally loaded.
 
 This is particularly true for packet buffers when doing L3 forwarding or flow classification.
@@ -70,6 +73,15 @@ no padding is required between objects (except for objects whose size are n x 3 
 
 When creating a new pool, the user can specify to use this feature or not.
 
+.. note::
+
+   This feature is not present for Arm systems.
+   Modern Arm Interconnects choose the SN-F (memory channel)
+   using a hash of memory address bits.
+   As a result, the load is distributed evenly in all cases,
+   including the above described, rendering this feature unnecessary.
+
+
 .. _mempool_local_cache:
 
 Local Cache
@@ -90,7 +102,7 @@ the speed at which a core can access its own cache for a specific memory pool wi
 The cache is composed of a small, per-core table of pointers and its length (used as a stack).
 This internal cache can be enabled or disabled at creation of the pool.
 
-The maximum size of the cache is static and is defined at compilation time (CONFIG_RTE_MEMPOOL_CACHE_MAX_SIZE).
+The maximum size of the cache is static and is defined at compilation time (RTE_MEMPOOL_CACHE_MAX_SIZE).
 
 :numref:`figure_mempool` shows a cache in operation.
 
@@ -103,7 +115,9 @@ The maximum size of the cache is static and is defined at compilation time (CONF
 Alternatively to the internal default per-lcore local cache, an application can create and manage external caches through the ``rte_mempool_cache_create()``, ``rte_mempool_cache_free()`` and ``rte_mempool_cache_flush()`` calls.
 These user-owned caches can be explicitly passed to ``rte_mempool_generic_put()`` and ``rte_mempool_generic_get()``.
 The ``rte_mempool_default_cache()`` call returns the default internal cache if any.
-In contrast to the default caches, user-owned caches can be used by non-EAL threads too.
+In contrast to the default caches, user-owned caches can be used by unregistered non-EAL threads too.
+
+.. _Mempool_Handlers:
 
 Mempool Handlers
 ------------------------
@@ -114,7 +128,7 @@ management systems and software based memory allocators, to be used with DPDK.
 There are two aspects to a mempool handler.
 
 * Adding the code for your new mempool operations (ops). This is achieved by
-  adding a new mempool ops code, and using the ``MEMPOOL_REGISTER_OPS`` macro.
+  adding a new mempool ops code, and using the ``RTE_MEMPOOL_REGISTER_OPS`` macro.
 
 * Using the new API to call ``rte_mempool_create_empty()`` and
   ``rte_mempool_set_ops_byname()`` to create a new mempool and specifying which
@@ -133,6 +147,14 @@ For applications that use ``rte_pktmbuf_create()``, there is a config setting
 (``RTE_MBUF_DEFAULT_MEMPOOL_OPS``) that allows the application to make use of
 an alternative mempool handler.
 
+  .. note::
+
+    When running a DPDK application with shared libraries, mempool handler
+    shared objects specified with the '-d' EAL command-line parameter are
+    dynamically loaded. When running a multi-process application with shared
+    libraries, the -d arguments for mempool handlers *must be specified in the
+    same order for all processes* to ensure correct operation.
+
 
 Use Cases
 ---------
@@ -140,8 +162,5 @@ Use Cases
 All allocations that require a high level of performance should use a pool-based memory allocator.
 Below are some examples:
 
-*   :ref:`Mbuf Library <Mbuf_Library>`
-
-*   :ref:`Environment Abstraction Layer <Environment_Abstraction_Layer>` , for logging service
-
+*   :doc:`mbuf_lib`
 *   Any application that needs to allocate fixed-sized objects in the data plane and that will be continuously utilized by the system.

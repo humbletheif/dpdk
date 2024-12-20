@@ -1,10 +1,8 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2014 Intel Corporation.
 
-.. _LPM_Library:
-
-LPM Library
-===========
+Longest Prefix Match (LPM) Library
+==================================
 
 The DPDK LPM library component implements the Longest Prefix Match (LPM) table search method for 32-bit keys
 that is typically used to find the best route match in IP forwarding applications.
@@ -145,6 +143,38 @@ depending on whether we need to move to the next table or not.
 Prefix expansion is one of the keys of this algorithm,
 since it improves the speed dramatically by adding redundancy.
 
+Deletion
+~~~~~~~~
+
+When deleting a rule, a replacement rule is searched for. Replacement rule is an existing rule that has
+the longest prefix match with the rule to be deleted, but has shorter prefix.
+
+If a replacement rule is found, target tbl24 and tbl8 entries are updated to have the same depth and next hop
+value with the replacement rule.
+
+If no replacement rule can be found, target tbl24 and tbl8 entries will be cleared.
+
+Prefix expansion is performed if the rule's depth is not exactly 24 bits or 32 bits.
+
+After deleting a rule, a group of tbl8s that belongs to the same tbl24 entry are freed in following cases:
+
+*   All tbl8s in the group are empty .
+
+*   All tbl8s in the group have the same values and with depth no greater than 24.
+
+Free of tbl8s have different behaviors:
+
+*   If RCU is not used, tbl8s are cleared and reclaimed immediately.
+
+*   If RCU is used, tbl8s are reclaimed when readers are in quiescent state.
+
+When the LPM is not using RCU, tbl8 group can be freed immediately even though the readers might be using
+the tbl8 group entries. This might result in incorrect lookup results.
+
+RCU QSBR process is integrated for safe tbl8 group reclamation. Application has certain responsibilities
+while using this feature. Please refer to resource reclamation framework of :doc:`rcu_lib`
+for more details.
+
 Lookup
 ~~~~~~
 
@@ -195,4 +225,4 @@ References
     `http://www.ietf.org/rfc/rfc1519 <http://www.ietf.org/rfc/rfc1519>`_
 
 *   Pankaj Gupta, Algorithms for Routing Lookups and Packet Classification, PhD Thesis, Stanford University,
-    2000  (`http://klamath.stanford.edu/~pankaj/thesis/ thesis_1sided.pdf <http://klamath.stanford.edu/~pankaj/thesis/%20thesis_1sided.pdf>`_ )
+    2000  (`http://klamath.stanford.edu/~pankaj/thesis/thesis_1sided.pdf <http://klamath.stanford.edu/~pankaj/thesis/thesis_1sided.pdf>`_ )

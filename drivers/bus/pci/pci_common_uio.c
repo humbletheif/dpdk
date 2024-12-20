@@ -26,7 +26,7 @@ EAL_REGISTER_TAILQ(rte_uio_tailq)
 static int
 pci_uio_map_secondary(struct rte_pci_device *dev)
 {
-	int fd, i, j;
+	int fd, i = 0, j, res_idx;
 	struct mapped_pci_resource *uio_res;
 	struct mapped_pci_res_list *uio_res_list =
 			RTE_TAILQ_CAST(rte_uio_tailq.head, mapped_pci_res_list);
@@ -37,13 +37,21 @@ pci_uio_map_secondary(struct rte_pci_device *dev)
 		if (rte_pci_addr_cmp(&uio_res->pci_addr, &dev->addr))
 			continue;
 
-		for (i = 0; i != uio_res->nb_maps; i++) {
+		/* Map all BARs */
+		for (res_idx = 0; res_idx != PCI_MAX_RESOURCE; res_idx++) {
+			/* skip empty BAR */
+			if (dev->mem_resource[res_idx].phys_addr == 0)
+				continue;
+
+			if (i >= uio_res->nb_maps)
+				return -1;
+
 			/*
 			 * open devname, to mmap it
 			 */
 			fd = open(uio_res->maps[i].path, O_RDWR);
 			if (fd < 0) {
-				RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
+				PCI_LOG(ERR, "Cannot open %s: %s",
 					uio_res->maps[i].path, strerror(errno));
 				return -1;
 			}
@@ -51,14 +59,14 @@ pci_uio_map_secondary(struct rte_pci_device *dev)
 			void *mapaddr = pci_map_resource(uio_res->maps[i].addr,
 					fd, (off_t)uio_res->maps[i].offset,
 					(size_t)uio_res->maps[i].size, 0);
-			/* fd is not needed in slave process, close it */
+
+			/* fd is not needed in secondary process, close it */
 			close(fd);
 			if (mapaddr != uio_res->maps[i].addr) {
-				RTE_LOG(ERR, EAL,
-					"Cannot mmap device resource file %s to address: %p\n",
+				PCI_LOG(ERR, "Cannot mmap device resource file %s to address: %p",
 					uio_res->maps[i].path,
 					uio_res->maps[i].addr);
-				if (mapaddr != MAP_FAILED) {
+				if (mapaddr != NULL) {
 					/* unmap addrs correctly mapped */
 					for (j = 0; j < i; j++)
 						pci_unmap_resource(
@@ -70,11 +78,14 @@ pci_uio_map_secondary(struct rte_pci_device *dev)
 				}
 				return -1;
 			}
+			dev->mem_resource[res_idx].addr = mapaddr;
+
+			i++;
 		}
 		return 0;
 	}
 
-	RTE_LOG(ERR, EAL, "Cannot find resource for device\n");
+	PCI_LOG(ERR, "Cannot find resource for device");
 	return 1;
 }
 
@@ -88,17 +99,20 @@ pci_uio_map_resource(struct rte_pci_device *dev)
 	struct mapped_pci_res_list *uio_res_list =
 		RTE_TAILQ_CAST(rte_uio_tailq.head, mapped_pci_res_list);
 
-	dev->intr_handle.fd = -1;
-	dev->intr_handle.uio_cfg_fd = -1;
+	if (rte_intr_fd_set(dev->intr_handle, -1))
+		return -1;
 
-	/* secondary processes - use already recorded details */
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return pci_uio_map_secondary(dev);
+	if (rte_intr_dev_fd_set(dev->intr_handle, -1))
+		return -1;
 
 	/* allocate uio resource */
 	ret = pci_uio_alloc_resource(dev, &uio_res);
 	if (ret)
 		return ret;
+
+	/* secondary processes - use already recorded details */
+	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
+		return pci_uio_map_secondary(dev);
 
 	/* Map all BARs */
 	for (i = 0; i != PCI_MAX_RESOURCE; i++) {
@@ -166,14 +180,10 @@ pci_uio_remap_resource(struct rte_pci_device *dev)
 				PROT_READ | PROT_WRITE,
 				MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
 		if (map_address == MAP_FAILED) {
-			RTE_LOG(ERR, EAL,
-				"Cannot remap resource for device %s\n",
-				dev->name);
+			PCI_LOG(ERR, "Cannot remap resource for device %s", dev->name);
 			return -1;
 		}
-		RTE_LOG(INFO, EAL,
-			"Successful remap resource for device %s\n",
-			dev->name);
+		PCI_LOG(INFO, "Successful remap resource for device %s", dev->name);
 	}
 
 	return 0;
@@ -205,6 +215,7 @@ pci_uio_unmap_resource(struct rte_pci_device *dev)
 	struct mapped_pci_resource *uio_res;
 	struct mapped_pci_res_list *uio_res_list =
 			RTE_TAILQ_CAST(rte_uio_tailq.head, mapped_pci_res_list);
+	int uio_cfg_fd;
 
 	if (dev == NULL)
 		return;
@@ -213,6 +224,18 @@ pci_uio_unmap_resource(struct rte_pci_device *dev)
 	uio_res = pci_uio_find_resource(dev);
 	if (uio_res == NULL)
 		return;
+
+	/* close fd */
+	if (rte_intr_fd_get(dev->intr_handle) >= 0)
+		close(rte_intr_fd_get(dev->intr_handle));
+	uio_cfg_fd = rte_intr_dev_fd_get(dev->intr_handle);
+	if (uio_cfg_fd >= 0) {
+		close(uio_cfg_fd);
+		rte_intr_dev_fd_set(dev->intr_handle, -1);
+	}
+
+	rte_intr_fd_set(dev->intr_handle, -1);
+	rte_intr_type_set(dev->intr_handle, RTE_INTR_HANDLE_UNKNOWN);
 
 	/* secondary processes - just free maps */
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
@@ -225,14 +248,4 @@ pci_uio_unmap_resource(struct rte_pci_device *dev)
 
 	/* free uio resource */
 	rte_free(uio_res);
-
-	/* close fd if in primary process */
-	close(dev->intr_handle.fd);
-	if (dev->intr_handle.uio_cfg_fd >= 0) {
-		close(dev->intr_handle.uio_cfg_fd);
-		dev->intr_handle.uio_cfg_fd = -1;
-	}
-
-	dev->intr_handle.fd = -1;
-	dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
 }

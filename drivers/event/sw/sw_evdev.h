@@ -7,7 +7,7 @@
 
 #include "sw_evdev_log.h"
 #include <rte_eventdev.h>
-#include <rte_eventdev_pmd_vdev.h>
+#include <eventdev_pmd_vdev.h>
 #include <rte_atomic.h>
 
 #define SW_DEFAULT_CREDIT_QUANTA 32
@@ -29,7 +29,13 @@
 /* report dequeue burst sizes in buckets */
 #define SW_DEQ_STAT_BUCKET_SHIFT 2
 /* how many packets pulled from port by sched */
-#define SCHED_DEQUEUE_BURST_SIZE 32
+#define SCHED_DEQUEUE_DEFAULT_BURST_SIZE 32
+/* max buffer size */
+#define SCHED_DEQUEUE_MAX_BURST_SIZE 256
+
+/* Flush the pipeline after this many no enq to cq */
+#define SCHED_NO_ENQ_CYCLE_FLUSH 256
+
 
 #define SW_PORT_HIST_LIST (MAX_SW_PROD_Q_DEPTH) /* size of our history list */
 #define NUM_SAMPLES 64 /* how many data points use for average stats */
@@ -122,7 +128,7 @@ struct sw_qid {
 
 	/* Track packet order for reordering when needed */
 	struct reorder_buffer_entry *reorder_buffer; /*< pkts await reorder */
-	struct rte_ring *reorder_buffer_freelist; /* available reorder slots */
+	struct rob_ring *reorder_buffer_freelist; /* available reorder slots */
 	uint32_t reorder_buffer_index; /* oldest valid reorder buffer entry */
 	uint32_t window_size;          /* Used to wrap reorder_buffer_index */
 
@@ -164,17 +170,17 @@ struct sw_port {
 	int16_t num_ordered_qids;
 
 	/** Ring and buffer for pulling events from workers for scheduling */
-	struct rte_event_ring *rx_worker_ring __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct rte_event_ring *rx_worker_ring;
 	/** Ring and buffer for pushing packets to workers after scheduling */
 	struct rte_event_ring *cq_worker_ring;
 
 	/* hole */
 
 	/* num releases yet to be completed on this port */
-	uint16_t outstanding_releases __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint16_t outstanding_releases;
 	uint16_t inflight_max; /* app requested max inflights for this port */
 	uint16_t inflight_credits; /* num credits this port has right now */
-	uint8_t implicit_release; /* release events before dequeueing */
+	uint8_t implicit_release; /* release events before dequeuing */
 
 	uint16_t last_dequeue_burst_sz; /* how big the burst was */
 	uint64_t last_dequeue_ticks; /* used to track burst processing time */
@@ -185,7 +191,7 @@ struct sw_port {
 		/* bucket values in 4s for shorter reporting */
 
 	/* History list structs, containing info on pkts egressed to worker */
-	uint16_t hist_head __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint16_t hist_head;
 	uint16_t hist_tail;
 	uint16_t inflights;
 	struct sw_hist_list_entry hist_list[SW_PORT_HIST_LIST];
@@ -197,7 +203,7 @@ struct sw_port {
 	uint32_t pp_buf_start;
 	uint32_t pp_buf_count;
 	uint16_t cq_buf_count;
-	struct rte_event pp_buf[SCHED_DEQUEUE_BURST_SIZE];
+	struct rte_event pp_buf[SCHED_DEQUEUE_MAX_BURST_SIZE];
 	struct rte_event cq_buf[MAX_SW_CONS_Q_DEPTH];
 
 	uint8_t num_qids_mapped;
@@ -214,10 +220,20 @@ struct sw_evdev {
 	uint32_t xstats_count_mode_port;
 	uint32_t xstats_count_mode_queue;
 
-	/* Contains all ports - load balanced and directed */
-	struct sw_port ports[SW_PORTS_MAX] __rte_cache_aligned;
+	/* Minimum burst size*/
+	alignas(RTE_CACHE_LINE_SIZE) uint32_t sched_min_burst_size;
+	/* Port dequeue burst size*/
+	uint32_t sched_deq_burst_size;
+	/* Refill pp buffers only once per scheduler call*/
+	uint32_t refill_once_per_iter;
+	/* Current values */
+	uint32_t sched_flush_count;
+	uint32_t sched_min_burst;
 
-	rte_atomic32_t inflights __rte_cache_aligned;
+	/* Contains all ports - load balanced and directed */
+	alignas(RTE_CACHE_LINE_SIZE) struct sw_port ports[SW_PORTS_MAX];
+
+	alignas(RTE_CACHE_LINE_SIZE) rte_atomic32_t inflights;
 
 	/*
 	 * max events in this instance. Cached here for performance.
@@ -226,23 +242,25 @@ struct sw_evdev {
 	uint32_t nb_events_limit;
 
 	/* Internal queues - one per logical queue */
-	struct sw_qid qids[RTE_EVENT_MAX_QUEUES_PER_DEV] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct sw_qid qids[RTE_EVENT_MAX_QUEUES_PER_DEV];
 	struct sw_queue_chunk *chunk_list_head;
 	struct sw_queue_chunk *chunks;
 
 	/* Cache how many packets are in each cq */
-	uint16_t cq_ring_space[SW_PORTS_MAX] __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) uint16_t cq_ring_space[SW_PORTS_MAX];
 
 	/* Array of pointers to load-balanced QIDs sorted by priority level */
 	struct sw_qid *qids_prioritized[RTE_EVENT_MAX_QUEUES_PER_DEV];
 
 	/* Stats */
-	struct sw_point_stats stats __rte_cache_aligned;
+	alignas(RTE_CACHE_LINE_SIZE) struct sw_point_stats stats;
 	uint64_t sched_called;
 	int32_t sched_quanta;
 	uint64_t sched_no_iq_enqueues;
 	uint64_t sched_no_cq_enqueues;
 	uint64_t sched_cq_qid_called;
+	uint64_t sched_last_iter_bitmask;
+	uint8_t sched_progress_last_iter;
 
 	uint8_t started;
 	uint32_t credit_update_quanta;
@@ -270,29 +288,27 @@ sw_pmd_priv_const(const struct rte_eventdev *eventdev)
 	return eventdev->data->dev_private;
 }
 
-uint16_t sw_event_enqueue(void *port, const struct rte_event *ev);
 uint16_t sw_event_enqueue_burst(void *port, const struct rte_event ev[],
 		uint16_t num);
 
-uint16_t sw_event_dequeue(void *port, struct rte_event *ev, uint64_t wait);
 uint16_t sw_event_dequeue_burst(void *port, struct rte_event *ev, uint16_t num,
 			uint64_t wait);
-void sw_event_schedule(struct rte_eventdev *dev);
+int32_t sw_event_schedule(struct rte_eventdev *dev);
 int sw_xstats_init(struct sw_evdev *dev);
 int sw_xstats_uninit(struct sw_evdev *dev);
 int sw_xstats_get_names(const struct rte_eventdev *dev,
 	enum rte_event_dev_xstats_mode mode, uint8_t queue_port_id,
 	struct rte_event_dev_xstats_name *xstats_names,
-	unsigned int *ids, unsigned int size);
+	uint64_t *ids, unsigned int size);
 int sw_xstats_get(const struct rte_eventdev *dev,
 		enum rte_event_dev_xstats_mode mode, uint8_t queue_port_id,
-		const unsigned int ids[], uint64_t values[], unsigned int n);
+		const uint64_t ids[], uint64_t values[], unsigned int n);
 uint64_t sw_xstats_get_by_name(const struct rte_eventdev *dev,
-		const char *name, unsigned int *id);
+		const char *name, uint64_t *id);
 int sw_xstats_reset(struct rte_eventdev *dev,
 		enum rte_event_dev_xstats_mode mode,
 		int16_t queue_port_id,
-		const uint32_t ids[],
+		const uint64_t ids[],
 		uint32_t nb_ids);
 
 int test_sw_eventdev(void);

@@ -4,23 +4,32 @@
 SW Turbo Poll Mode Driver
 =========================
 
-The SW Turbo PMD (**baseband_turbo_sw**) provides a poll mode bbdev driver that utilizes
-Intel optimized libraries for LTE Layer 1 workloads acceleration. This PMD
-supports the functions: Turbo FEC, Rate Matching and CRC functions.
+The SW Turbo PMD (**baseband_turbo_sw**) provides a software only poll mode bbdev
+driver that can optionally utilize Intel optimized libraries for LTE and 5GNR
+Layer 1 workloads acceleration.
+
+Note that the driver can also be built without any dependency with reduced
+functionality for maintenance purpose.
+
+To enable linking to the SDK libraries see detailed installation section below.
+
+This PMD supports the functions: FEC, Rate Matching and CRC functions detailed
+in the Features section.
 
 Features
 --------
 
-SW Turbo PMD has support for the following capabilities:
+SW Turbo PMD can support for the following capabilities when the SDK libraries
+are used:
 
-For the encode operation:
+For the LTE encode operation:
 
 * ``RTE_BBDEV_TURBO_CRC_24A_ATTACH``
 * ``RTE_BBDEV_TURBO_CRC_24B_ATTACH``
 * ``RTE_BBDEV_TURBO_RATE_MATCH``
 * ``RTE_BBDEV_TURBO_RV_INDEX_BYPASS``
 
-For the decode operation:
+For the LTE decode operation:
 
 * ``RTE_BBDEV_TURBO_SUBBLOCK_DEINTERLEAVE``
 * ``RTE_BBDEV_TURBO_CRC_TYPE_24B``
@@ -29,11 +38,25 @@ For the decode operation:
 * ``RTE_BBDEV_TURBO_DEC_TB_CRC_24B_KEEP``
 * ``RTE_BBDEV_TURBO_EARLY_TERMINATION``
 
+For the 5G NR LDPC encode operation:
+
+* ``RTE_BBDEV_LDPC_RATE_MATCH``
+* ``RTE_BBDEV_LDPC_CRC_24A_ATTACH``
+* ``RTE_BBDEV_LDPC_CRC_24B_ATTACH``
+
+For the 5G NR LDPC decode operation:
+
+* ``RTE_BBDEV_LDPC_CRC_TYPE_24B_CHECK``
+* ``RTE_BBDEV_LDPC_CRC_TYPE_24A_CHECK``
+* ``RTE_BBDEV_LDPC_CRC_TYPE_24B_DROP``
+* ``RTE_BBDEV_LDPC_HQ_COMBINE_IN_ENABLE``
+* ``RTE_BBDEV_LDPC_HQ_COMBINE_OUT_ENABLE``
+* ``RTE_BBDEV_LDPC_ITERATION_STOP_ENABLE``
 
 Limitations
 -----------
 
-* In-place operations for Turbo encode and decode are not supported
+* In-place operations for encode and decode are not supported
 
 Installation
 ------------
@@ -41,68 +64,66 @@ Installation
 FlexRAN SDK Download
 ~~~~~~~~~~~~~~~~~~~~
 
-To build DPDK with the *baseband_turbo_sw* PMD the user is required to download
-the export controlled ``FlexRAN SDK`` Libraries. An account at `Intel Resource
-Design Center <https://www.intel.com/content/www/us/en/design/resource-design-center.html>`_
-needs to be registered.
+As an option it is possible to link this driver with FleXRAN SDK libraries
+which can enable real time signal processing using AVX instructions.
 
-Once registered, the user needs to log in, and look for
-*Intel FlexRAN Software Release Package -18-09* to download or directly through
-this `link <https://cdrdv2.intel.com/v1/dl/getContent/605167>`_.
+These libraries are available through this `link
+<https://github.com/intel/FlexRAN-FEC-SDK-Modules/tree/Branch_FEC_SDK_23.07>`_.
 
 After download is complete, the user needs to unpack and compile on their
 system before building DPDK.
+
+To get the FlexRAN FEC SDK user manual, extract this `doxygen
+<https://github.com/intel/FlexRAN-FEC-SDK-Modules/blob/Branch_FEC_SDK_23.07/doc/doxygen/html.zip>`_.
 
 The following table maps DPDK versions with past FlexRAN SDK releases:
 
 .. _table_flexran_releases:
 
-.. table:: DPDK and FlexRAN SDK releases compliance
+.. table:: DPDK and FlexRAN FEC SDK releases compliance
 
    =====================  ============================
-   DPDK version           FlexRAN SDK release
+   DPDK version           FlexRAN FEC SDK release
    =====================  ============================
-   18.02                  1.3.0
-   18.05                  1.4.0
-   18.08                  1.6.0
-   19.02                  18.09
+   19.08 to 22.07         19.04
+   22.11+                 22.11
+   23.11+                 FEC_SDK_23.07
    =====================  ============================
 
 FlexRAN SDK Installation
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
+Note that the installation of these libraries is optional.
+
 The following are pre-requisites for building FlexRAN SDK Libraries:
- (a) An AVX2 supporting machine
- (b) CentOS Linux release 7.2.1511 (Core) operating system
- (c) Intel ICC 18.0.1 20171018 compiler installed
+ (a) An AVX512 supporting machine.
+ (b) Ubuntu Linux release 22.04 operating system is advised.
+ (c) Intel ICX 2023.0.0 compiler or more recent and related libraries.
+     ICX is available `here <https://docs.o-ran-sc.org/projects/o-ran-sc-o-du-phy/en/latest/build_prerequisite.html#download-and-install-oneapi>`_.
+ (d) `FlexRAN SDK Modules <https://github.com/intel/FlexRAN-FEC-SDK-Modules/tree/Branch_FEC_SDK_23.07>`_.
+ (e) CMake 3.9.2 (Minimum 2.8.12)
+ (f) Google Test 1.7.0 (Required to run the verification and compute performance tests)
+ (g) Math Kernel Library 18.0 (Required by some functions in SDK)
 
 The following instructions should be followed in this exact order:
+
+#. Clone the SDK (folder name needs to end in 'sdk')
+
+    .. code-block:: console
+
+        git clone -b Branch_FEC_SDK_23.07 https://github.com/intel/FlexRAN-FEC-SDK-Modules.git flexran_sdk
 
 #. Set the environment variables:
 
     .. code-block:: console
 
-        source <path-to-icc-compiler-install-folder>/linux/bin/compilervars.sh intel64 -platform linux
-
-#. Extract the ``605167-flexran-18-09-tar.gz`` package:
-
-    .. code-block:: console
-
-        mkdir FlexRAN-18.09
-        tar xvzf 605167-flexran-18-09-tar.gz -C FlexRAN-18.09/
-
-#. Run the SDK extractor script and accept the license:
-
-    .. code-block:: console
-
-        cd <path-to-workspace>/FlexRAN-18.09/
-        ./SDK-18.09.sh
+        source <path-to-workspace>/export_settings.sh -o -avx512
 
 #. Generate makefiles based on system configuration:
 
     .. code-block:: console
 
-        cd <path-to-workspace>/FlexRAN-18.09/SDK-18.09/sdk/
+        cd <path-to-workspace>
         ./create-makefiles-linux.sh
 
 #. A build folder is generated in this form ``build-<ISA>-<CC>``, enter that
@@ -110,14 +131,13 @@ The following instructions should be followed in this exact order:
 
     .. code-block:: console
 
-        cd build-avx2-icc/
-        make && make install
+        cd <path-to-workspace>/build-${WIRELESS_SDK_TARGET_ISA}-${WIRELESS_SDK_TOOLCHAIN}/
+        make -j$(nproc) && make install
 
+DPDK Initialization
+~~~~~~~~~~~~~~~~~~~
 
-Initialization
---------------
-
-In order to enable this virtual bbdev PMD, the user must:
+In order to enable this virtual bbdev PMD, the user may:
 
 * Build the ``FLEXRAN SDK`` libraries (explained in Installation section).
 
@@ -125,16 +145,25 @@ In order to enable this virtual bbdev PMD, the user must:
   FlexRAN SDK libraries were installed. And ``DIR_WIRELESS_SDK`` to the path
   where the libraries were extracted.
 
+* Point pkgconfig towards these libraries so that they can be automatically found by meson.
+  If not, DPDK will still compile but the related functionality would be stubbed out.
+
 Example:
 
 .. code-block:: console
 
-    export FLEXRAN_SDK=<path-to-workspace>/FlexRAN-18.09/SDK-18.09/sdk/build-avx2-icc/install
-    export DIR_WIRELESS_SDK=<path-to-workspace>/FlexRAN-18.09/SDK-18.09/sdk/
+    export FLEXRAN_SDK=<path-to-workspace>/build-${WIRELESS_SDK_TARGET_ISA}-${WIRELESS_SDK_TOOLCHAIN}/install
+    export DIR_WIRELESS_SDK=<path-to-workspace>/build-${WIRELESS_SDK_TARGET_ISA}-${WIRELESS_SDK_TOOLCHAIN}
+    export PKG_CONFIG_PATH=${DIR_WIRELESS_SDK}/pkgcfg:${PKG_CONFIG_PATH}
+    cd build
+    meson configure
 
+* For AVX512 machines with SDK libraries installed then both 4G and 5G can be enabled for full real time FEC capability.
+  For AVX2 machines it is possible to only enable the 4G libraries and the PMD capabilities will be limited to 4G FEC.
+  If no library is present then the PMD will still build but its capabilities will be limited accordingly.
 
-* Set ``CONFIG_RTE_LIBRTE_PMD_BBDEV_TURBO_SW=y`` in DPDK common configuration
-  file ``config/common_base``.
+SW Turbo PMD Usage
+~~~~~~~~~~~~~~~~~~
 
 To use the PMD in an application, user must:
 
@@ -150,7 +179,6 @@ The following parameters (all optional) can be provided in the previous two call
 * ``max_nb_queues``: Specify the maximum number of queues in the device (default is ``RTE_MAX_LCORE``).
 
 Example:
-~~~~~~~~
 
 .. code-block:: console
 

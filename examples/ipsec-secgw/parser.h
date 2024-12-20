@@ -2,12 +2,16 @@
  * Copyright(c) 2016 Intel Corporation
  */
 
+#ifndef __PARSER_H
+#define __PARSER_H
+
+#include <ctype.h>
 #include <sys/types.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
+#include <string.h>
 
-#ifndef __PARSER_H
-#define __PARSER_H
+#include <rte_ip6.h>
 
 struct parse_status {
 	int status;
@@ -61,18 +65,27 @@ int
 parse_ipv4_addr(const char *token, struct in_addr *ipv4, uint32_t *mask);
 
 int
-parse_ipv6_addr(const char *token, struct in6_addr *ipv6, uint32_t *mask);
+parse_ipv6_addr(const char *token, struct rte_ipv6_addr *ipv6, uint32_t *mask);
 
 int
 parse_range(const char *token, uint16_t *low, uint16_t *high);
+
+void
+sp4_sort_arr(void);
 
 void
 parse_sp4_tokens(char **tokens, uint32_t n_tokens,
 	struct parse_status *status);
 
 void
+sp6_sort_arr(void);
+
+void
 parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 	struct parse_status *status);
+
+void
+sa_sort_arr(void);
 
 void
 parse_sa_tokens(char **tokens, uint32_t n_tokens,

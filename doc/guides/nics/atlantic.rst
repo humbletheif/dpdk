@@ -9,8 +9,15 @@ Atlantic DPDK driver provides DPDK support for Aquantia's AQtion family of chips
 More information can be found at `Aquantia Official Website
 <https://www.aquantia.com/products/client-connectivity/>`_.
 
+Supported Chipsets and NICs
+---------------------------
+
+- Aquantia AQtion AQC107 10 Gigabit Ethernet Controller
+- Aquantia AQtion AQC108 5 Gigabit Ethernet Controller
+- Aquantia AQtion AQC109 2.5 Gigabit Ethernet Controller
+
 Supported features
-^^^^^^^^^^^^^^^^^^
+------------------
 
 - Base L2 features
 - Promiscuous mode
@@ -18,30 +25,18 @@ Supported features
 - Port statistics
 - RSS (Receive Side Scaling)
 - Checksum offload
-- Jumbo Frame upto 16K
+- Jumbo Frame up to 16K
+- MACSEC offload
 
-Configuration Information
-^^^^^^^^^^^^^^^^^^^^^^^^^
+Experimental API features
+-------------------------
 
-- ``CONFIG_RTE_LIBRTE_ATLANTIC_PMD`` (default ``y``)
-
-Application Programming Interface
----------------------------------
+- MACSEC PMD API is considered as experimental and is subject to change/removal in next DPDK releases.
 
 Limitations or Known issues
 ---------------------------
 
-Statistics
-~~~~~~~~~~
-
 MTU setting
-~~~~~~~~~~~
+^^^^^^^^^^^
 
 Atlantic NIC supports up to 16K jumbo frame size
-
-Supported Chipsets and NICs
----------------------------
-
-- Aquantia AQtion AQC107 10 Gigabit Ethernet Controller
-- Aquantia AQtion AQC108 5 Gigabit Ethernet Controller
-- Aquantia AQtion AQC109 2.5 Gigabit Ethernet Controller

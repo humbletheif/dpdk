@@ -1,23 +1,30 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2024 Intel Corporation
  */
 
 #ifndef _IXGBE_OS_H_
 #define _IXGBE_OS_H_
 
+#include <pthread.h>
 #include <string.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <stdbool.h>
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_cycles.h>
 #include <rte_log.h>
 #include <rte_byteorder.h>
 #include <rte_io.h>
+#include <rte_ip.h>
 
 #include "../ixgbe_logs.h"
 #include "../ixgbe_bypass_defines.h"
+
+#ifndef IPPROTO_SCTP
+#define IPPROTO_SCTP 132
+#endif
 
 #define ASSERT(x) if(!(x)) rte_panic("IXGBE: x")
 
@@ -26,7 +33,7 @@
 #define msec_delay(x) DELAY(1000*(x))
 
 #define DEBUGFUNC(F)            DEBUGOUT(F "\n");
-#define DEBUGOUT(S, args...)    PMD_DRV_LOG_RAW(DEBUG, S, ##args)
+#define DEBUGOUT(S, ...)        RTE_LOG(DEBUG, IXGBE_DRIVER, "%s(): " S, __func__, ## __VA_ARGS__)
 #define DEBUGOUT1(S, args...)   DEBUGOUT(S, ##args)
 #define DEBUGOUT2(S, args...)   DEBUGOUT(S, ##args)
 #define DEBUGOUT3(S, args...)   DEBUGOUT(S, ##args)
@@ -42,12 +49,16 @@
 
 #define false               0
 #define true                1
+#ifndef RTE_EXEC_ENV_WINDOWS
 #define min(a,b)	RTE_MIN(a,b) 
+#endif
 
 #define EWARN(hw, S, args...)     DEBUGOUT1(S, ##args)
 
 /* Bunch of defines for shared code bogosity */
+#ifndef UNREFERENCED_PARAMETER
 #define UNREFERENCED_PARAMETER(_p)  
+#endif
 #define UNREFERENCED_1PARAMETER(_p) 
 #define UNREFERENCED_2PARAMETER(_p, _q)
 #define UNREFERENCED_3PARAMETER(_p, _q, _r) 
@@ -69,7 +80,9 @@ enum {
 #define IXGBE_NTOHS(_i)	rte_be_to_cpu_16(_i)
 #define IXGBE_CPU_TO_LE16(_i)  rte_cpu_to_le_16(_i)
 #define IXGBE_CPU_TO_LE32(_i)  rte_cpu_to_le_32(_i)
+#define IXGBE_LE16_TO_CPU(_i)  rte_le_to_cpu_16(_i)
 #define IXGBE_LE32_TO_CPU(_i)  rte_le_to_cpu_32(_i)
+#define IXGBE_LE64_TO_CPU(_i)  rte_le_to_cpu_64(_i)
 #define IXGBE_LE32_TO_CPUS(_i) rte_le_to_cpu_32(_i)
 #define IXGBE_CPU_TO_BE16(_i)  rte_cpu_to_be_16(_i)
 #define IXGBE_CPU_TO_BE32(_i)  rte_cpu_to_be_32(_i)
@@ -82,9 +95,6 @@ typedef int16_t		s16;
 typedef uint32_t	u32;
 typedef int32_t		s32;
 typedef uint64_t	u64;
-#ifndef __cplusplus
-typedef int		bool;
-#endif
 
 #define mb()	rte_mb()
 #define wmb()	rte_wmb()
@@ -106,6 +116,12 @@ static inline uint32_t ixgbe_read_addr(volatile void* addr)
 
 #define IXGBE_PCI_REG_WRITE_RELAXED(reg, value)		\
 	rte_write32_relaxed((rte_cpu_to_le_32(value)), reg)
+
+#define IXGBE_PCI_REG_WC_WRITE(reg, value)			\
+	rte_write32_wc((rte_cpu_to_le_32(value)), reg)
+
+#define IXGBE_PCI_REG_WC_WRITE_RELAXED(reg, value)		\
+	rte_write32_wc_relaxed((rte_cpu_to_le_32(value)), reg)
 
 #define IXGBE_PCI_REG_ADDR(hw, reg) \
 	((volatile uint32_t *)((char *)(hw)->hw_addr + (reg)))
@@ -138,5 +154,19 @@ do {									\
 	while (((IXGBE_READ_REG(hw, (reg))) & (mask)) && (cnt--))	\
 		rte_delay_ms(1);					\
 } while (0)
+
+struct ixgbe_hw;
+struct ixgbe_lock {
+	pthread_mutex_t mutex;
+};
+
+void *ixgbe_calloc(struct ixgbe_hw *hw, size_t count, size_t size);
+void *ixgbe_malloc(struct ixgbe_hw *hw, size_t size);
+void ixgbe_free(struct ixgbe_hw *hw, void *addr);
+
+void ixgbe_init_lock(struct ixgbe_lock *lock);
+void ixgbe_destroy_lock(struct ixgbe_lock *lock);
+void ixgbe_acquire_lock(struct ixgbe_lock *lock);
+void ixgbe_release_lock(struct ixgbe_lock *lock);
 
 #endif /* _IXGBE_OS_H_ */

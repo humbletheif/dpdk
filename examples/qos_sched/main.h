@@ -5,11 +5,11 @@
 #ifndef _MAIN_H_
 #define _MAIN_H_
 
+#include <rte_sched.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#include <rte_sched.h>
 
 #define RTE_LOGTYPE_APP RTE_LOGTYPE_USER1
 
@@ -26,7 +26,7 @@ extern "C" {
 
 #define MAX_PKT_RX_BURST 64
 #define PKT_ENQUEUE 64
-#define PKT_DEQUEUE 32
+#define PKT_DEQUEUE 63
 #define MAX_PKT_TX_BURST 64
 
 #define RX_PTHRESH 8 /**< Default values of RX prefetch threshold reg. */
@@ -37,19 +37,11 @@ extern "C" {
 #define TX_HTHRESH 0  /**< Default values of TX host threshold reg. */
 #define TX_WTHRESH 0  /**< Default values of TX write-back threshold reg. */
 
-#define BURST_TX_DRAIN_US 100
-
-#ifndef APP_MAX_LCORE
-#if (RTE_MAX_LCORE > 64)
-#define APP_MAX_LCORE 64
-#else
-#define APP_MAX_LCORE RTE_MAX_LCORE
-#endif
-#endif
-
-#define MAX_DATA_STREAMS (APP_MAX_LCORE/2)
+#define MAX_DATA_STREAMS RTE_MAX_LCORE/2
 #define MAX_SCHED_SUBPORTS		8
 #define MAX_SCHED_PIPES		4096
+#define MAX_SCHED_PIPE_PROFILES		256
+#define MAX_SCHED_SUBPORT_PROFILES	8
 
 #ifndef APP_COLLECT_STAT
 #define APP_COLLECT_STAT		1
@@ -71,12 +63,8 @@ struct thread_stat
 };
 
 
-struct thread_conf
+struct __rte_cache_aligned thread_conf
 {
-	uint32_t counter;
-	uint32_t n_mbufs;
-	struct rte_mbuf **m_table;
-
 	uint16_t rx_port;
 	uint16_t tx_port;
 	uint16_t rx_queue;
@@ -88,7 +76,7 @@ struct thread_conf
 #if APP_COLLECT_STAT
 	struct thread_stat stat;
 #endif
-} __rte_cache_aligned;
+};
 
 
 struct flow_conf
@@ -147,7 +135,12 @@ extern struct burst_conf burst_conf;
 extern struct ring_thresh rx_thresh;
 extern struct ring_thresh tx_thresh;
 
+extern uint32_t active_queues[RTE_SCHED_QUEUES_PER_PIPE];
+extern uint32_t n_active_queues;
+
 extern struct rte_sched_port_params port_params;
+extern struct rte_sched_cman_params cman_params;
+extern struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS];
 
 int app_parse_args(int argc, char **argv);
 int app_init(void);

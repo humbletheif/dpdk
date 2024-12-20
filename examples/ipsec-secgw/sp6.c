@@ -15,7 +15,7 @@
 #include "ipsec.h"
 #include "parser.h"
 
-#define MAX_ACL_RULE_NUM	1024
+#define INIT_ACL_RULE_NUM	128
 
 enum {
 	IP6_PROTO,
@@ -31,8 +31,6 @@ enum {
 	IP6_DSTP,
 	IP6_NUM
 };
-
-#define IP6_ADDR_SIZE 16
 
 static struct rte_acl_field_def ip6_defs[IP6_NUM] = {
 	{
@@ -116,11 +114,84 @@ static struct rte_acl_field_def ip6_defs[IP6_NUM] = {
 
 RTE_ACL_RULE_DEF(acl6_rules, RTE_DIM(ip6_defs));
 
-static struct acl6_rules acl6_rules_out[MAX_ACL_RULE_NUM];
+static struct acl6_rules *acl6_rules_out;
 static uint32_t nb_acl6_rules_out;
+static uint32_t sp_out_sz;
 
-static struct acl6_rules acl6_rules_in[MAX_ACL_RULE_NUM];
+static struct acl6_rules *acl6_rules_in;
 static uint32_t nb_acl6_rules_in;
+static uint32_t sp_in_sz;
+
+static struct rte_ipv6_addr
+ipv6_src_from_sp(const struct acl6_rules *rule)
+{
+	struct rte_ipv6_addr alignas(alignof(rte_be64_t)) addr = RTE_IPV6_ADDR_UNSPEC;
+	rte_be64_t *values = (rte_be64_t *)&addr;
+
+	values[0] = rte_cpu_to_be_64((uint64_t)rule->field[IP6_SRC0].value.u32 << 32 |
+		rule->field[IP6_SRC1].value.u32);
+	values[1] = rte_cpu_to_be_64((uint64_t)rule->field[IP6_SRC2].value.u32 << 32 |
+		rule->field[IP6_SRC3].value.u32);
+
+	return addr;
+}
+
+static struct rte_ipv6_addr
+ipv6_dst_from_sp(const struct acl6_rules *rule)
+{
+	struct rte_ipv6_addr alignas(alignof(rte_be64_t)) addr = RTE_IPV6_ADDR_UNSPEC;
+	rte_be64_t *values = (rte_be64_t *)&addr;
+
+	values[0] = rte_cpu_to_be_64((uint64_t)rule->field[IP6_DST0].value.u32 << 32 |
+		rule->field[IP6_DST1].value.u32);
+	values[1] = rte_cpu_to_be_64((uint64_t)rule->field[IP6_DST2].value.u32 << 32 |
+		rule->field[IP6_DST3].value.u32);
+
+	return addr;
+}
+
+static uint32_t
+ipv6_src_mask_from_sp(const struct acl6_rules *rule)
+{
+	return rule->field[IP6_SRC0].mask_range.u32 +
+		rule->field[IP6_SRC1].mask_range.u32 +
+		rule->field[IP6_SRC2].mask_range.u32 +
+		rule->field[IP6_SRC3].mask_range.u32;
+}
+
+static uint32_t
+ipv6_dst_mask_from_sp(const struct acl6_rules *rule)
+{
+	return rule->field[IP6_DST0].mask_range.u32 +
+		rule->field[IP6_DST1].mask_range.u32 +
+		rule->field[IP6_DST2].mask_range.u32 +
+		rule->field[IP6_DST3].mask_range.u32;
+}
+
+static int
+extend_sp_arr(struct acl6_rules **sp_tbl, uint32_t cur_cnt, uint32_t *cur_sz)
+{
+	if (*sp_tbl == NULL) {
+		*sp_tbl = calloc(INIT_ACL_RULE_NUM, sizeof(struct acl6_rules));
+		if (*sp_tbl == NULL)
+			return -1;
+		*cur_sz = INIT_ACL_RULE_NUM;
+		return 0;
+	}
+
+	if (cur_cnt >= *cur_sz) {
+		*sp_tbl = realloc(*sp_tbl,
+			*cur_sz * sizeof(struct acl6_rules) * 2);
+		if (*sp_tbl == NULL)
+			return -1;
+		/* clean reallocated extra space */
+		memset(&(*sp_tbl)[*cur_sz], 0,
+			*cur_sz * sizeof(struct acl6_rules));
+		*cur_sz *= 2;
+	}
+
+	return 0;
+}
 
 void
 parse_sp6_tokens(char **tokens, uint32_t n_tokens,
@@ -130,6 +201,7 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 
 	uint32_t *ri = NULL; /* rule index */
 	uint32_t ti = 0; /* token index */
+	uint32_t tv;
 
 	uint32_t esp_p = 0;
 	uint32_t protect_p = 0;
@@ -145,9 +217,8 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 	if (strcmp(tokens[1], "in") == 0) {
 		ri = &nb_acl6_rules_in;
 
-		APP_CHECK(*ri <= MAX_ACL_RULE_NUM - 1, status, "too "
-			"many sp rules, abort insertion\n");
-		if (status->status < 0)
+		if (extend_sp_arr(&acl6_rules_in, nb_acl6_rules_in,
+				&sp_in_sz) < 0)
 			return;
 
 		rule_ipv6 = &acl6_rules_in[*ri];
@@ -155,9 +226,8 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 	} else if (strcmp(tokens[1], "out") == 0) {
 		ri = &nb_acl6_rules_out;
 
-		APP_CHECK(*ri <= MAX_ACL_RULE_NUM - 1, status, "too "
-			"many sp rules, abort insertion\n");
-		if (status->status < 0)
+		if (extend_sp_arr(&acl6_rules_out, nb_acl6_rules_out,
+				&sp_out_sz) < 0)
 			return;
 
 		rule_ipv6 = &acl6_rules_out[*ri];
@@ -202,8 +272,12 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 			if (status->status < 0)
 				return;
 
-			rule_ipv6->data.userdata =
-				PROTECT(atoi(tokens[ti]));
+			tv = atoi(tokens[ti]);
+			APP_CHECK(tv != DISCARD && tv != BYPASS, status,
+				"invalid SPI: %s", tokens[ti]);
+			if (status->status < 0)
+				return;
+			rule_ipv6->data.userdata = tv;
 
 			protect_p = 1;
 			continue;
@@ -269,7 +343,7 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 		}
 
 		if (strcmp(tokens[ti], "src") == 0) {
-			struct in6_addr ip;
+			struct rte_ipv6_addr ip;
 			uint32_t depth;
 
 			APP_CHECK_PRESENCE(src_p, tokens[ti], status);
@@ -287,34 +361,34 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 				return;
 
 			rule_ipv6->field[1].value.u32 =
-				(uint32_t)ip.s6_addr[0] << 24 |
-				(uint32_t)ip.s6_addr[1] << 16 |
-				(uint32_t)ip.s6_addr[2] << 8 |
-				(uint32_t)ip.s6_addr[3];
+				(uint32_t)ip.a[0] << 24 |
+				(uint32_t)ip.a[1] << 16 |
+				(uint32_t)ip.a[2] << 8 |
+				(uint32_t)ip.a[3];
 			rule_ipv6->field[1].mask_range.u32 =
 				(depth > 32) ? 32 : depth;
 			depth = (depth > 32) ? (depth - 32) : 0;
 			rule_ipv6->field[2].value.u32 =
-				(uint32_t)ip.s6_addr[4] << 24 |
-				(uint32_t)ip.s6_addr[5] << 16 |
-				(uint32_t)ip.s6_addr[6] << 8 |
-				(uint32_t)ip.s6_addr[7];
+				(uint32_t)ip.a[4] << 24 |
+				(uint32_t)ip.a[5] << 16 |
+				(uint32_t)ip.a[6] << 8 |
+				(uint32_t)ip.a[7];
 			rule_ipv6->field[2].mask_range.u32 =
 				(depth > 32) ? 32 : depth;
 			depth = (depth > 32) ? (depth - 32) : 0;
 			rule_ipv6->field[3].value.u32 =
-				(uint32_t)ip.s6_addr[8] << 24 |
-				(uint32_t)ip.s6_addr[9] << 16 |
-				(uint32_t)ip.s6_addr[10] << 8 |
-				(uint32_t)ip.s6_addr[11];
+				(uint32_t)ip.a[8] << 24 |
+				(uint32_t)ip.a[9] << 16 |
+				(uint32_t)ip.a[10] << 8 |
+				(uint32_t)ip.a[11];
 			rule_ipv6->field[3].mask_range.u32 =
 				(depth > 32) ? 32 : depth;
 			depth = (depth > 32) ? (depth - 32) : 0;
 			rule_ipv6->field[4].value.u32 =
-				(uint32_t)ip.s6_addr[12] << 24 |
-				(uint32_t)ip.s6_addr[13] << 16 |
-				(uint32_t)ip.s6_addr[14] << 8 |
-				(uint32_t)ip.s6_addr[15];
+				(uint32_t)ip.a[12] << 24 |
+				(uint32_t)ip.a[13] << 16 |
+				(uint32_t)ip.a[14] << 8 |
+				(uint32_t)ip.a[15];
 			rule_ipv6->field[4].mask_range.u32 =
 				(depth > 32) ? 32 : depth;
 
@@ -323,7 +397,7 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 		}
 
 		if (strcmp(tokens[ti], "dst") == 0) {
-			struct in6_addr ip;
+			struct rte_ipv6_addr ip;
 			uint32_t depth;
 
 			APP_CHECK_PRESENCE(dst_p, tokens[ti], status);
@@ -341,34 +415,34 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 				return;
 
 			rule_ipv6->field[5].value.u32 =
-				(uint32_t)ip.s6_addr[0] << 24 |
-				(uint32_t)ip.s6_addr[1] << 16 |
-				(uint32_t)ip.s6_addr[2] << 8 |
-				(uint32_t)ip.s6_addr[3];
+				(uint32_t)ip.a[0] << 24 |
+				(uint32_t)ip.a[1] << 16 |
+				(uint32_t)ip.a[2] << 8 |
+				(uint32_t)ip.a[3];
 			rule_ipv6->field[5].mask_range.u32 =
 				(depth > 32) ? 32 : depth;
 			depth = (depth > 32) ? (depth - 32) : 0;
 			rule_ipv6->field[6].value.u32 =
-				(uint32_t)ip.s6_addr[4] << 24 |
-				(uint32_t)ip.s6_addr[5] << 16 |
-				(uint32_t)ip.s6_addr[6] << 8 |
-				(uint32_t)ip.s6_addr[7];
+				(uint32_t)ip.a[4] << 24 |
+				(uint32_t)ip.a[5] << 16 |
+				(uint32_t)ip.a[6] << 8 |
+				(uint32_t)ip.a[7];
 			rule_ipv6->field[6].mask_range.u32 =
 				(depth > 32) ? 32 : depth;
 			depth = (depth > 32) ? (depth - 32) : 0;
 			rule_ipv6->field[7].value.u32 =
-				(uint32_t)ip.s6_addr[8] << 24 |
-				(uint32_t)ip.s6_addr[9] << 16 |
-				(uint32_t)ip.s6_addr[10] << 8 |
-				(uint32_t)ip.s6_addr[11];
+				(uint32_t)ip.a[8] << 24 |
+				(uint32_t)ip.a[9] << 16 |
+				(uint32_t)ip.a[10] << 8 |
+				(uint32_t)ip.a[11];
 			rule_ipv6->field[7].mask_range.u32 =
 				(depth > 32) ? 32 : depth;
 			depth = (depth > 32) ? (depth - 32) : 0;
 			rule_ipv6->field[8].value.u32 =
-				(uint32_t)ip.s6_addr[12] << 24 |
-				(uint32_t)ip.s6_addr[13] << 16 |
-				(uint32_t)ip.s6_addr[14] << 8 |
-				(uint32_t)ip.s6_addr[15];
+				(uint32_t)ip.a[12] << 24 |
+				(uint32_t)ip.a[13] << 16 |
+				(uint32_t)ip.a[14] << 8 |
+				(uint32_t)ip.a[15];
 			rule_ipv6->field[8].mask_range.u32 =
 				(depth > 32) ? 32 : depth;
 
@@ -455,7 +529,7 @@ parse_sp6_tokens(char **tokens, uint32_t n_tokens,
 			continue;
 		}
 
-		/* unrecognizeable input */
+		/* unrecognizable input */
 		APP_CHECK(0, status, "unrecognized input \"%s\"",
 			tokens[ti]);
 		return;
@@ -548,7 +622,7 @@ acl6_init(const char *name, int32_t socketid, const struct acl6_rules *rules,
 	struct rte_acl_config acl_build_param;
 	struct rte_acl_ctx *ctx;
 
-	printf("Creating SP context with %u max rules\n", MAX_ACL_RULE_NUM);
+	printf("Creating SP context with %u rules\n", rules_nb);
 
 	memset(&acl_param, 0, sizeof(acl_param));
 
@@ -561,7 +635,7 @@ acl6_init(const char *name, int32_t socketid, const struct acl6_rules *rules,
 	acl_param.name = s;
 	acl_param.socket_id = socketid;
 	acl_param.rule_size = RTE_ACL_RULE_SZ(RTE_DIM(ip6_defs));
-	acl_param.max_rule_num = MAX_ACL_RULE_NUM;
+	acl_param.max_rule_num = rules_nb;
 
 	ctx = rte_acl_create(&acl_param);
 	if (ctx == NULL)
@@ -586,6 +660,42 @@ acl6_init(const char *name, int32_t socketid, const struct acl6_rules *rules,
 	return ctx;
 }
 
+/*
+ * check that for each rule it's SPI has a correspondent entry in SAD
+ */
+static int
+check_spi_value(struct sa_ctx *sa_ctx, int inbound)
+{
+	uint32_t i, num, spi;
+	int32_t spi_idx;
+	struct acl6_rules *acr;
+
+	if (inbound != 0) {
+		acr = acl6_rules_in;
+		num = nb_acl6_rules_in;
+	} else {
+		acr = acl6_rules_out;
+		num = nb_acl6_rules_out;
+	}
+
+	for (i = 0; i != num; i++) {
+		spi = acr[i].data.userdata;
+		if (spi != DISCARD && spi != BYPASS) {
+			spi_idx = sa_spi_present(sa_ctx, spi, inbound);
+			if (spi_idx < 0) {
+				RTE_LOG(ERR, IPSEC,
+					"SPI %u is not present in SAD\n",
+					spi);
+				return -ENOENT;
+			}
+			/* Update userdata with spi index */
+			acr[i].data.userdata = spi_idx + 1;
+		}
+	}
+
+	return 0;
+}
+
 void
 sp6_init(struct socket_ctx *ctx, int32_t socket_id)
 {
@@ -601,6 +711,14 @@ sp6_init(struct socket_ctx *ctx, int32_t socket_id)
 	if (ctx->sp_ip6_out != NULL)
 		rte_exit(EXIT_FAILURE, "Outbound IPv6 SP DB for socket %u "
 				"already initialized\n", socket_id);
+
+	if (check_spi_value(ctx->sa_in, 1) < 0)
+		rte_exit(EXIT_FAILURE,
+			"Inbound IPv6 SP DB has unmatched in SAD SPIs\n");
+
+	if (check_spi_value(ctx->sa_out, 0) < 0)
+		rte_exit(EXIT_FAILURE,
+			"Outbound IPv6 SP DB has unmatched in SAD SPIs\n");
 
 	if (nb_acl6_rules_in > 0) {
 		name = "sp_ip6_in";
@@ -619,14 +737,26 @@ sp6_init(struct socket_ctx *ctx, int32_t socket_id)
 			"specified\n");
 }
 
+static int
+sp_cmp(const void *p, const void *q)
+{
+	uint32_t spi1 = ((const struct acl6_rules *)p)->data.userdata;
+	uint32_t spi2 = ((const struct acl6_rules *)q)->data.userdata;
+
+	return (int)(spi1 - spi2);
+}
+
 /*
  * Search though SP rules for given SPI.
  */
 int
-sp6_spi_present(uint32_t spi, int inbound)
+sp6_spi_present(uint32_t spi, int inbound, struct ip_addr ip_addr[2],
+			uint32_t mask[2])
 {
-	uint32_t i, num;
+	uint32_t num;
+	struct acl6_rules *rule;
 	const struct acl6_rules *acr;
+	struct acl6_rules tmpl;
 
 	if (inbound != 0) {
 		acr = acl6_rules_in;
@@ -636,10 +766,27 @@ sp6_spi_present(uint32_t spi, int inbound)
 		num = nb_acl6_rules_out;
 	}
 
-	for (i = 0; i != num; i++) {
-		if (acr[i].data.userdata == PROTECT(spi))
-			return i;
+	tmpl.data.userdata = spi;
+
+	rule = bsearch(&tmpl, acr, num, sizeof(struct acl6_rules), sp_cmp);
+	if (rule != NULL) {
+		if (NULL != ip_addr && NULL != mask) {
+			ip_addr[0].ip.ip6 = ipv6_src_from_sp(rule);
+			ip_addr[1].ip.ip6 = ipv6_dst_from_sp(rule);
+			mask[0] = ipv6_src_mask_from_sp(rule);
+			mask[1] = ipv6_dst_mask_from_sp(rule);
+		}
+		return RTE_PTR_DIFF(rule, acr) / sizeof(struct acl6_rules);
 	}
 
 	return -ENOENT;
+}
+
+void
+sp6_sort_arr(void)
+{
+	qsort(acl6_rules_in, nb_acl6_rules_in, sizeof(struct acl6_rules),
+		sp_cmp);
+	qsort(acl6_rules_out, nb_acl6_rules_out, sizeof(struct acl6_rules),
+		sp_cmp);
 }

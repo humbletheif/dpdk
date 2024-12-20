@@ -8,7 +8,6 @@
 
 allow_experimental_apis = true
 deps += ['vhost', 'cryptodev']
-cflags += ['-D_FILE_OFFSET_BITS=64']
 sources = files(
-	'main.c'
+        'main.c',
 )

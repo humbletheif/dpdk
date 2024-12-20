@@ -5,13 +5,13 @@
 #ifndef __TIMVF_EVDEV_H__
 #define __TIMVF_EVDEV_H__
 
+#include <event_timer_adapter_pmd.h>
 #include <rte_common.h>
 #include <rte_cycles.h>
 #include <rte_debug.h>
 #include <rte_eal.h>
-#include <rte_eventdev.h>
 #include <rte_event_timer_adapter.h>
-#include <rte_event_timer_adapter_pmd.h>
+#include <rte_eventdev.h>
 #include <rte_io.h>
 #include <rte_lcore.h>
 #include <rte_log.h>
@@ -26,10 +26,9 @@
 #include <octeontx_mbox.h>
 #include <octeontx_fpavf.h>
 
-#define timvf_log(level, fmt, args...) \
-	rte_log(RTE_LOG_ ## level, otx_logtype_timvf, \
-			"[%s] %s() " fmt "\n", \
-			RTE_STR(event_timer_octeontx), __func__, ## args)
+#define timvf_log(level, ...) \
+	RTE_LOG_LINE_PREFIX(level, OTX_TIMVF, "[%s] %s() ", \
+		RTE_STR(event_timer_octeontx) RTE_LOG_COMMA __func__, __VA_ARGS__)
 
 #define timvf_log_info(fmt, ...) timvf_log(INFO, fmt, ##__VA_ARGS__)
 #define timvf_log_dbg(fmt, ...) timvf_log(DEBUG, fmt, ##__VA_ARGS__)
@@ -113,12 +112,8 @@
 #define TIMVF_ENABLE_STATS_ARG               ("timvf_stats")
 
 extern int otx_logtype_timvf;
+#define RTE_LOGTYPE_OTX_TIMVF otx_logtype_timvf
 static const uint16_t nb_chunk_slots = (TIM_CHUNK_SIZE / 16) - 1;
-
-struct timvf_info {
-	uint16_t domain; /* Domain id */
-	uint8_t total_timvfs; /* Total timvf available in domain */
-};
 
 enum timvf_clk_src {
 	TIM_CLK_SRC_SCLK = RTE_EVENT_TIMER_ADAPTER_CPU_CLK,
@@ -128,23 +123,23 @@ enum timvf_clk_src {
 };
 
 /* TIM_MEM_BUCKET */
-struct tim_mem_bucket {
+struct __rte_aligned(8) tim_mem_bucket {
 	uint64_t first_chunk;
 	union {
-		uint64_t w1;
+		RTE_ATOMIC(uint64_t) w1;
 		struct {
-			uint32_t nb_entry;
+			RTE_ATOMIC(uint32_t) nb_entry;
 			uint8_t sbt:1;
 			uint8_t hbt:1;
 			uint8_t bsk:1;
 			uint8_t rsvd:5;
-			uint8_t lock;
-			int16_t chunk_remainder;
+			RTE_ATOMIC(uint8_t) lock;
+			RTE_ATOMIC(int16_t) chunk_remainder;
 		};
 	};
 	uint64_t current_chunk;
 	uint64_t pad;
-} __rte_packed __rte_aligned(8);
+} __rte_packed;
 
 struct tim_mem_entry {
 	uint64_t w0;
@@ -165,7 +160,7 @@ typedef struct tim_mem_entry * (*refill_chunk)(
 		struct tim_mem_bucket * const bkt,
 		struct timvf_ring * const timr);
 
-struct timvf_ring {
+struct __rte_cache_aligned timvf_ring {
 	bkt_id get_target_bkt;
 	refill_chunk refill_chunk;
 	struct rte_reciprocal_u64 fast_div;
@@ -180,9 +175,10 @@ struct timvf_ring {
 	void *bkt_pos;
 	uint64_t max_tout;
 	uint64_t nb_chunks;
+	uint64_t nb_timers;
 	enum timvf_clk_src clk_src;
 	uint16_t tim_ring_id;
-} __rte_cache_aligned;
+};
 
 static __rte_always_inline uint32_t
 bkt_mod(const uint32_t rel_bkt, const uint32_t nb_bkts)
@@ -196,11 +192,13 @@ bkt_and(uint32_t rel_bkt, uint32_t nb_bkts)
 	return rel_bkt & (nb_bkts - 1);
 }
 
-int timvf_info(struct timvf_info *tinfo);
+uint8_t timvf_get_ring(void);
+void timvf_release_ring(uint8_t vfid);
 void *timvf_bar(uint8_t id, uint8_t bar);
 int timvf_timer_adapter_caps_get(const struct rte_eventdev *dev, uint64_t flags,
-		uint32_t *caps, const struct rte_event_timer_adapter_ops **ops,
-		uint8_t enable_stats);
+				 uint32_t *caps,
+				 const struct event_timer_adapter_ops **ops,
+				 uint8_t enable_stats);
 uint16_t timvf_timer_cancel_burst(const struct rte_event_timer_adapter *adptr,
 		struct rte_event_timer **tim, const uint16_t nb_timers);
 uint16_t timvf_timer_arm_burst_sp(const struct rte_event_timer_adapter *adptr,
@@ -221,5 +219,6 @@ uint16_t timvf_timer_arm_tmo_brst_stats(
 		struct rte_event_timer **tim, const uint64_t timeout_tick,
 		const uint16_t nb_timers);
 void timvf_set_chunk_refill(struct timvf_ring * const timr, uint8_t use_fpa);
+void timvf_set_eventdevice(struct rte_eventdev *dev);
 
 #endif /* __TIMVF_EVDEV_H__ */

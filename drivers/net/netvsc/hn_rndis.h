@@ -10,6 +10,7 @@ void	hn_rndis_link_status(struct rte_eth_dev *dev, const void *msg);
 int	hn_rndis_attach(struct hn_data *hv);
 void	hn_rndis_detach(struct hn_data *hv);
 int	hn_rndis_get_eaddr(struct hn_data *hv, uint8_t *eaddr);
+int	hn_rndis_get_mtu(struct hn_data *hv, uint32_t *mtu);
 int	hn_rndis_get_linkstatus(struct hn_data *hv);
 int	hn_rndis_get_linkspeed(struct hn_data *hv);
 int	hn_rndis_set_rxfilter(struct hn_data *hv, uint32_t filter);
@@ -22,8 +23,9 @@ int	hn_rndis_conf_offload(struct hn_data *hv,
 			      uint64_t rx_offloads);
 int	hn_rndis_query_rsscaps(struct hn_data *hv,
 			       unsigned int *rxr_cnt0);
-int	hn_rndis_conf_rss(struct hn_data *hv,
-			  const struct rte_eth_rss_conf *rss_conf);
+int	hn_rndis_query_rss(struct hn_data *hv,
+			   struct rte_eth_rss_conf *rss_conf);
+int	hn_rndis_conf_rss(struct hn_data *hv, uint32_t flags);
 uint32_t hn_rndis_get_ptypes(struct hn_data *hv);
 
 #ifdef RTE_LIBRTE_NETVSC_DEBUG_DUMP

@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
 
-if host_machine.system() != 'linux'
-	build = false
+if not is_linux
+    build = false
+    reason = 'only supported on Linux'
 endif
 sources = files('rte_eth_af_packet.c')
+require_iova_in_mbuf = false

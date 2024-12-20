@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 
 # SPDX-License-Identifier: BSD-3-Clause
 # Copyright(c) 2017 Intel Corporation
@@ -12,32 +12,25 @@ import shlex
 from threading import Timer
 
 def kill(process):
-    print "ERROR: Test app timed out"
+    print("ERROR: Test app timed out")
     process.kill()
 
-if "RTE_SDK" in os.environ:
-    dpdk_path = os.environ["RTE_SDK"]
-else:
-    dpdk_path = "../.."
-
-if "RTE_TARGET" in os.environ:
-    dpdk_target = os.environ["RTE_TARGET"]
-else:
-    dpdk_target = "x86_64-native-linuxapp-gcc"
+dpdk_path = "../.."
+dpdk_target = "build"
 
 parser = argparse.ArgumentParser(
                     description='BBdev Unit Test Application',
                     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument("-p", "--testapp-path",
                     help="specifies path to the bbdev test app",
-                    default=dpdk_path + "/" + dpdk_target + "/app/testbbdev")
+                    default=dpdk_path + "/" + dpdk_target + "/app/dpdk-test-bbdev")
 parser.add_argument("-e", "--eal-params",
-                    help="EAL arguments which are passed to the test app",
-                    default="--vdev=baseband_null0")
-parser.add_argument("-t", "--timeout",
+                    help="EAL arguments which must be passed to the test app",
+                    default="--vdev=baseband_null0 -a00:00.0")
+parser.add_argument("-T", "--timeout",
                     type=int,
                     help="Timeout in seconds",
-                    default=300)
+                    default=600)
 parser.add_argument("-c", "--test-cases",
                     nargs="+",
                     help="Defines test cases to run. Run all if not specified")
@@ -55,15 +48,26 @@ parser.add_argument("-b", "--burst-size",
                     type=int,
                     help="Operations enqueue/dequeue burst size.",
                     default=[32])
+parser.add_argument("-s", "--snr",
+                    type=int,
+                    help="SNR in dB for BLER tests",
+                    default=0)
+parser.add_argument("-t", "--iter-max",
+                    type=int,
+                    help="Max iterations",
+                    default=6)
 parser.add_argument("-l", "--num-lcores",
                     type=int,
                     help="Number of lcores to run.",
                     default=16)
+parser.add_argument("-i", "--init-device",
+                    action='store_true',
+                    help="Initialise PF device with default values.")
 
 args = parser.parse_args()
 
 if not os.path.exists(args.testapp_path):
-    print "No such file: " + args.testapp_path
+    print("No such file: " + args.testapp_path)
     sys.exit(1)
 
 params = [args.testapp_path]
@@ -71,6 +75,12 @@ if args.eal_params:
     params.extend(shlex.split(args.eal_params))
 
 params.extend(["--"])
+
+if args.snr:
+    params.extend(["-s", str(args.snr)])
+
+if args.iter_max:
+    params.extend(["-t", str(args.iter_max)])
 
 if args.num_ops:
     params.extend(["-n", str(args.num_ops)])
@@ -82,6 +92,10 @@ if args.test_cases:
     params.extend(["-c"])
     params.extend([",".join(args.test_cases)])
 
+if args.init_device:
+    params.extend(["-i"])
+
+
 exit_status = 0
 for vector in args.test_vector:
     for burst_size in args.burst_size:
@@ -91,21 +105,32 @@ for vector in args.test_vector:
         params_string = " ".join(call_params)
 
         print("Executing: {}".format(params_string))
-        app_proc = subprocess.Popen(call_params)
-        if args.timeout > 0:
-            timer = Timer(args.timeout, kill, [app_proc])
-            timer.start()
-
         try:
-            app_proc.communicate()
-        except:
-            print("Error: failed to execute: {}".format(params_string))
-        finally:
-            timer.cancel()
-
-        if app_proc.returncode != 0:
+            output = subprocess.run(call_params, timeout=args.timeout, universal_newlines=True)
+        except subprocess.TimeoutExpired as e:
+            print("===========================================================")
+            print("Starting Test Suite : BBdev TimeOut Tests")
+            print("INFO: One of the tests timed out {}".format(e))
+            print("INFO: Unexpected Error")
+            print("+ ------------------------------------------------------- +")
+            print("== test: timeout")
+            print("Unexpected Error")
+            print("TestCase [ 0] : timeout failed")
+            print(" + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ +")
+            print(" + Tests Failed :       1")
+            print(" + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ +")
             exit_status = 1
-            print("ERROR TestCase failed. Failed test for vector {}. Return code: {}".format(
-                vector, app_proc.returncode))
-
+        if output.returncode < 0:
+            print("===========================================================")
+            print("Starting Test Suite : BBdev Exception Tests")
+            print("INFO: One of the tests returned {}".format(output.returncode))
+            print("INFO: Unexpected Error")
+            print("+ ------------------------------------------------------- +")
+            print("== test: exception")
+            print("Unexpected Error")
+            print("TestCase [ 0] : exception failed")
+            print(" + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ +")
+            print(" + Tests Failed :       1")
+            print(" + ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ +")
+            exit_status = 1
 sys.exit(exit_status)

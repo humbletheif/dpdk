@@ -13,7 +13,7 @@ print_help ()
 	cat <<- END_OF_HELP
 
 	Find fixes to backport on previous versions.
-	It looks for the word "fix" in the headline or a tag "Fixes" or "Reverts".
+	It looks for a tag "Fixes" or for "Cc: stable@dpdk.org".
 	The oldest bug origin is printed as well as partially fixed versions.
 	END_OF_HELP
 }
@@ -50,7 +50,7 @@ commit_version () # <hash>
 		head -n1)
 	if [ -z "$tag" ] ; then
 		# before -rc1 tag of release in progress
-		make showversion | cut -d'.' -f-2
+		cat VERSION | cut -d'.' -f-2
 	else
 		echo $tag | sed 's,^v,,' | sed 's,-rc.*,,'
 	fi
@@ -68,7 +68,7 @@ origin_version () # <origin_hash> ...
 {
 	for origin in $* ; do
 		# check hash is valid
-		git rev-parse -q --verify $1 >&- || continue
+		git rev-parse -q --verify $origin >&- || continue
 		# get version of this bug origin
 		local origver=$(commit_version $origin)
 		local roothashes="$(origin_filter $origin)"
@@ -76,7 +76,7 @@ origin_version () # <origin_hash> ...
 			# look chained fix of fix recursively
 			local rootver="$(origin_version $roothashes)"
 			[ -n "$rootver" ] || continue
-			echo "$rootver (partially fixed in $origver)"
+			echo "$rootver (partially fixed in $origin @ $origver)"
 		else
 			echo "$origver"
 		fi
@@ -84,11 +84,11 @@ origin_version () # <origin_hash> ...
 	done | sort -uV | head -n1
 }
 
-# print a marker for stable tag presence
-stable_tag () # <hash>
+# print a marker for pattern presence in the commit message
+git_log_mark () # <hash> <pattern> <marker>
 {
-	if git log --format='%b' -1 $1 | grep -qi '^Cc: *stable@dpdk.org' ; then
-		echo 'S'
+	if git log --format='%b' -1 $1 | grep -qi "$2" ; then
+		echo "$3"
 	else
 		echo '-'
 	fi
@@ -97,8 +97,9 @@ stable_tag () # <hash>
 git log --oneline --reverse $range |
 while read id headline ; do
 	origins=$(origin_filter $id)
-	stable=$(stable_tag $id)
-	[ "$stable" = "S" ] || [ -n "$origins" ] || echo "$headline" | grep -q fix || continue
+	stable=$(git_log_mark $id '^Cc: *stable@dpdk.org' 'S')
+	fixes=$(git_log_mark $id '^Fixes:' 'F')
+	[ "$stable" = "S" ] || [ "$fixes" = "F" ] || [ -n "$origins" ] || continue
 	version=$(commit_version $id)
 	if [ -n "$origins" ] ; then
 		origver="$(origin_version $origins)"
@@ -108,5 +109,5 @@ while read id headline ; do
 	else
 		origver='N/A'
 	fi
-	printf '%s %7s %s %s (%s)\n' $version $id $stable "$headline" "$origver"
+	printf '%s %7s %s %s %s (%s)\n' $version $id $stable $fixes "$headline" "$origver"
 done

@@ -5,20 +5,13 @@
 #ifndef __INCLUDE_PARSER_H__
 #define __INCLUDE_PARSER_H__
 
+#include <ctype.h>
 #include <stdint.h>
 
 #include <rte_ip.h>
 #include <rte_ether.h>
 
 #define PARSE_DELIMITER				" \f\n\r\t\v"
-
-#define skip_white_spaces(pos)			\
-({						\
-	__typeof__(pos) _p = (pos);		\
-	for ( ; isspace(*_p); _p++)		\
-		;				\
-	_p;					\
-})
 
 static inline size_t
 skip_digits(const char *src)
@@ -46,8 +39,8 @@ int parser_read_uint8_hex(uint8_t *value, const char *p);
 int parse_hex_string(char *src, uint8_t *dst, uint32_t *size);
 
 int parse_ipv4_addr(const char *token, struct in_addr *ipv4);
-int parse_ipv6_addr(const char *token, struct in6_addr *ipv6);
-int parse_mac_addr(const char *token, struct ether_addr *addr);
+int parse_ipv6_addr(const char *token, struct rte_ipv6_addr *ipv6);
+int parse_mac_addr(const char *token, struct rte_ether_addr *addr);
 int parse_mpls_labels(char *string, uint32_t *labels, uint32_t *n_labels);
 
 struct cpu_core_params {

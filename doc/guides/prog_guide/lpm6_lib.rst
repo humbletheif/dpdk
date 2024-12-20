@@ -1,8 +1,8 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2014 Intel Corporation.
 
-LPM6 Library
-============
+Longest Prefix Match 6 (LPM6) Library
+=====================================
 
 The LPM6 (LPM for IPv6) library component implements the Longest Prefix Match (LPM) table search method for 128-bit keys
 that is typically used to find the best match route in IPv6 forwarding applications.
@@ -64,9 +64,9 @@ that are most commonly used in IPv6.
 
 The main data structure is built using the following elements:
 
-*   A table with 224 entries
+*   A table with 2^24 entries
 
-*   A number of tables, configurable by the user through the API, with 28 entries
+*   A number of tables, configurable by the user through the API, with 2^8 entries
 
 The first table, called tbl24, is indexed using the first 24 bits of the IP address be looked up,
 while the rest of the tables, called tbl8s,

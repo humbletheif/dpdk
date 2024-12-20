@@ -3,6 +3,8 @@
  * Copyright 2017 Mellanox Technologies, Ltd
  */
 
+#include <bus_driver.h>
+#include <rte_string_fns.h>
 #include <rte_malloc.h>
 
 #include "failsafe_private.h"
@@ -14,7 +16,7 @@ fs_ethdev_portid_get(const char *name, uint16_t *port_id)
 	size_t len;
 
 	if (name == NULL) {
-		DEBUG("Null pointer is specified\n");
+		DEBUG("Null pointer is specified");
 		return -EINVAL;
 	}
 	len = strlen(name);
@@ -47,7 +49,7 @@ fs_bus_init(struct rte_eth_dev *dev)
 			ret = rte_eal_hotplug_add(da->bus->name,
 						  da->name,
 						  da->args);
-			if (ret) {
+			if (ret < 0) {
 				ERROR("sub_device %d probe failed %s%s%s", i,
 				      rte_errno ? "(" : "",
 				      rte_errno ? strerror(rte_errno) : "",
@@ -78,14 +80,15 @@ fs_bus_init(struct rte_eth_dev *dev)
 					rte_eth_devices[pid].device->devargs;
 
 			/* Take control of probed device. */
-			free(da->args);
+			rte_devargs_reset(da);
 			memset(da, 0, sizeof(*da));
 			if (probed_da != NULL)
 				snprintf(devstr, sizeof(devstr), "%s,%s",
 					 probed_da->name, probed_da->args);
 			else
-				snprintf(devstr, sizeof(devstr), "%s",
-					 rte_eth_devices[pid].device->name);
+				strlcpy(devstr,
+					rte_eth_devices[pid].device->name,
+					sizeof(devstr));
 			ret = rte_devargs_parse(da, devstr);
 			if (ret) {
 				ERROR("Probed devargs parsing failed with code"
@@ -112,9 +115,9 @@ fs_bus_init(struct rte_eth_dev *dev)
 				continue;
 			}
 		}
-		ETH(sdev) = &rte_eth_devices[pid];
+		sdev->sdev_port_id = pid;
 		SUB_ID(sdev) = i;
-		sdev->fs_dev = dev;
+		sdev->fs_port_id = dev->data->port_id;
 		sdev->dev = ETH(sdev)->device;
 		sdev->state = DEV_PROBED;
 	}
@@ -145,7 +148,7 @@ fs_bus_uninit(struct rte_eth_dev *dev)
 
 	FOREACH_SUBDEV_STATE(sdev, i, dev, DEV_PROBED) {
 		sdev_ret = rte_dev_remove(sdev->dev);
-		if (sdev_ret) {
+		if (sdev_ret < 0) {
 			ERROR("Failed to remove requested device %s (err: %d)",
 			      sdev->dev->name, sdev_ret);
 			continue;

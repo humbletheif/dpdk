@@ -18,14 +18,14 @@
  * themselves are written by the clients, so we have a distinct set, on different
  * cache lines for each client to use.
  */
-struct rx_stats{
+struct __rte_cache_aligned rx_stats {
 	uint64_t rx[RTE_MAX_ETHPORTS];
-} __rte_cache_aligned;
+};
 
-struct tx_stats{
+struct __rte_cache_aligned tx_stats {
 	uint64_t tx[RTE_MAX_ETHPORTS];
 	uint64_t tx_drop[RTE_MAX_ETHPORTS];
-} __rte_cache_aligned;
+};
 
 struct port_info {
 	uint16_t num_ports;
@@ -43,13 +43,13 @@ struct port_info {
  * Given the rx queue name template above, get the queue name
  */
 static inline const char *
-get_rx_queue_name(unsigned id)
+get_rx_queue_name(uint8_t id)
 {
 	/* buffer for return value. Size calculated by %u being replaced
 	 * by maximum 3 digits (plus an extra byte for safety) */
 	static char buffer[sizeof(MP_CLIENT_RXQ_NAME) + 2];
 
-	snprintf(buffer, sizeof(buffer) - 1, MP_CLIENT_RXQ_NAME, id);
+	snprintf(buffer, sizeof(buffer), MP_CLIENT_RXQ_NAME, id);
 	return buffer;
 }
 

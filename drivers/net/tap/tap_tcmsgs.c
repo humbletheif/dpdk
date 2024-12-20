@@ -19,7 +19,7 @@ struct qdisc {
 
 struct list_args {
 	int nlsk_fd;
-	uint16_t ifindex;
+	unsigned int ifindex;
 	void *custom_arg;
 };
 
@@ -42,7 +42,7 @@ struct qdisc_custom_arg {
  *   Overrides the default netlink flags for this msg with those specified.
  */
 void
-tc_init_msg(struct nlmsg *msg, uint16_t ifindex, uint16_t type, uint16_t flags)
+tc_init_msg(struct tap_nlmsg *msg, unsigned int ifindex, uint16_t type, uint16_t flags)
 {
 	struct nlmsghdr *n = &msg->nh;
 
@@ -70,9 +70,9 @@ tc_init_msg(struct nlmsg *msg, uint16_t ifindex, uint16_t type, uint16_t flags)
  *   0 on success, -1 otherwise with errno set.
  */
 static int
-qdisc_del(int nlsk_fd, uint16_t ifindex, struct qdisc *qinfo)
+qdisc_del(int nlsk_fd, unsigned int ifindex, struct qdisc *qinfo)
 {
-	struct nlmsg msg;
+	struct tap_nlmsg msg;
 	int fd = 0;
 
 	tc_init_msg(&msg, ifindex, RTM_DELQDISC, 0);
@@ -114,10 +114,10 @@ error:
  *   0 on success, -1 otherwise with errno set.
  */
 int
-qdisc_add_multiq(int nlsk_fd, uint16_t ifindex)
+qdisc_add_multiq(int nlsk_fd, unsigned int ifindex)
 {
 	struct tc_multiq_qopt opt = {0};
-	struct nlmsg msg;
+	struct tap_nlmsg msg;
 
 	tc_init_msg(&msg, ifindex, RTM_NEWQDISC,
 		    NLM_F_REQUEST | NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE);
@@ -144,9 +144,9 @@ qdisc_add_multiq(int nlsk_fd, uint16_t ifindex)
  *   0 on success, -1 otherwise with errno set.
  */
 int
-qdisc_add_ingress(int nlsk_fd, uint16_t ifindex)
+qdisc_add_ingress(int nlsk_fd, unsigned int ifindex)
 {
-	struct nlmsg msg;
+	struct tap_nlmsg msg;
 
 	tc_init_msg(&msg, ifindex, RTM_NEWQDISC,
 		    NLM_F_REQUEST | NLM_F_ACK | NLM_F_EXCL | NLM_F_CREATE);
@@ -208,10 +208,10 @@ qdisc_del_cb(struct nlmsghdr *nh, void *arg)
  *   0 on success, -1 otherwise with errno set.
  */
 static int
-qdisc_iterate(int nlsk_fd, uint16_t ifindex,
+qdisc_iterate(int nlsk_fd, unsigned int ifindex,
 	      int (*callback)(struct nlmsghdr *, void *), void *arg)
 {
-	struct nlmsg msg;
+	struct tap_nlmsg msg;
 	struct list_args args = {
 		.nlsk_fd = nlsk_fd,
 		.ifindex = ifindex,
@@ -238,7 +238,7 @@ qdisc_iterate(int nlsk_fd, uint16_t ifindex,
  *   0 on success, -1 otherwise with errno set.
  */
 int
-qdisc_flush(int nlsk_fd, uint16_t ifindex)
+qdisc_flush(int nlsk_fd, unsigned int ifindex)
 {
 	return qdisc_iterate(nlsk_fd, ifindex, qdisc_del_cb, NULL);
 }
@@ -256,7 +256,7 @@ qdisc_flush(int nlsk_fd, uint16_t ifindex)
  *   Return -1 otherwise.
  */
 int
-qdisc_create_multiq(int nlsk_fd, uint16_t ifindex)
+qdisc_create_multiq(int nlsk_fd, unsigned int ifindex)
 {
 	int err = 0;
 
@@ -282,7 +282,7 @@ qdisc_create_multiq(int nlsk_fd, uint16_t ifindex)
  *   Return -1 otherwise.
  */
 int
-qdisc_create_ingress(int nlsk_fd, uint16_t ifindex)
+qdisc_create_ingress(int nlsk_fd, unsigned int ifindex)
 {
 	int err = 0;
 

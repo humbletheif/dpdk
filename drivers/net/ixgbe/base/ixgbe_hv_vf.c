@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2024 Intel Corporation
  */
 
 #include "ixgbe_vf.h"
 #include "ixgbe_hv_vf.h"
+#include "ixgbe_osdep.h"
 
 /**
- * Hyper-V variant - just a stub.
+ * ixgbevf_hv_update_mc_addr_list_vf - Hyper-V variant - just a stub.
  * @hw: unused
  * @mc_addr_list: unused
  * @mc_addr_count: unused
@@ -23,7 +24,7 @@ static s32 ixgbevf_hv_update_mc_addr_list_vf(struct ixgbe_hw *hw, u8 *mc_addr_li
 }
 
 /**
- * Hyper-V variant - just a stub.
+ * ixgbevf_hv_update_xcast_mode - Hyper-V variant - just a stub.
  * @hw: unused
  * @xcast_mode: unused
  */
@@ -35,7 +36,7 @@ static s32 ixgbevf_hv_update_xcast_mode(struct ixgbe_hw *hw, int xcast_mode)
 }
 
 /**
- * Hyper-V variant - just a stub.
+ * ixgbevf_hv_set_vfta_vf - Hyper-V variant - just a stub.
  * @hw: unused
  * @vlan: unused
  * @vind: unused
@@ -78,12 +79,12 @@ static s32 ixgbevf_hv_set_rar_vf(struct ixgbe_hw *hw, u32 index, u8 *addr, u32 v
 }
 
 /**
- * Hyper-V variant; there is no mailbox communication.
+ * ixgbevf_hv_check_mac_link_vf - Hyper-V variant; there is no mailbox
+ * communication.
  * @hw: pointer to hardware structure
  * @speed: pointer to link speed
  * @link_up: true is link is up, false otherwise
  * @autoneg_wait_to_complete: unused
- *
  */
 static s32 ixgbevf_hv_check_mac_link_vf(struct ixgbe_hw *hw,
 					ixgbe_link_speed *speed,
@@ -96,7 +97,7 @@ static s32 ixgbevf_hv_check_mac_link_vf(struct ixgbe_hw *hw,
 	UNREFERENCED_1PARAMETER(autoneg_wait_to_complete);
 
 	/* If we were hit with a reset drop the link */
-	if (!mbx->ops.check_for_rst(hw, 0) || !mbx->timeout)
+	if (!mbx->ops[0].check_for_rst(hw, 0) || !mbx->timeout)
 		mac->get_link_status = true;
 
 	if (!mac->get_link_status)
@@ -135,7 +136,8 @@ static s32 ixgbevf_hv_check_mac_link_vf(struct ixgbe_hw *hw,
 		break;
 	case IXGBE_LINKS_SPEED_100_82599:
 		*speed = IXGBE_LINK_SPEED_100_FULL;
-		if (hw->mac.type == ixgbe_mac_X550) {
+		if (hw->mac.type == ixgbe_mac_X550 ||
+		    hw->mac.type == ixgbe_mac_E610) {
 			if (links_reg & IXGBE_LINKS_SPEED_NON_STD)
 				*speed = IXGBE_LINK_SPEED_5GB_FULL;
 		}
@@ -182,10 +184,10 @@ static s32 ixgbevf_hv_set_rlpml_vf(struct ixgbe_hw *hw, u16 max_size)
 }
 
 /**
- *  ixgbevf_hv_negotiate_api_version_vf - Negotiate supported API version
- *  @hw: pointer to the HW structure
- *  @api: integer containing requested API version
- *  Hyper-V version - only ixgbe_mbox_api_10 supported.
+ * ixgbevf_hv_negotiate_api_version_vf - Negotiate supported API version
+ * @hw: pointer to the HW structure
+ * @api: integer containing requested API version
+ * Hyper-V version - only ixgbe_mbox_api_10 supported.
  **/
 static int ixgbevf_hv_negotiate_api_version_vf(struct ixgbe_hw *hw, int api)
 {
@@ -199,13 +201,13 @@ static int ixgbevf_hv_negotiate_api_version_vf(struct ixgbe_hw *hw, int api)
 }
 
 /**
- *  ixgbevf_hv_init_ops_vf - Initialize the pointers for vf
- *  @hw: pointer to hardware structure
+ * ixgbevf_hv_init_ops_vf - Initialize the pointers for vf
+ * @hw: pointer to hardware structure
  *
- *  This will assign function pointers, adapter-specific functions can
- *  override the assignment of generic function pointers by assigning
- *  their own adapter-specific function pointers.
- *  Does not touch the hardware.
+ * This will assign function pointers, adapter-specific functions can
+ * override the assignment of generic function pointers by assigning
+ * their own adapter-specific function pointers.
+ * Does not touch the hardware.
  **/
 s32 ixgbevf_hv_init_ops_vf(struct ixgbe_hw *hw)
 {

@@ -7,10 +7,13 @@
 #include <stdbool.h>
 
 #include <rte_branch_prediction.h>
+#include <cryptodev_pmd.h>
 #include <rte_cycles.h>
 #include <rte_io.h>
 #include <rte_memory.h>
 #include <rte_prefetch.h>
+
+#include "otx_cryptodev.h"
 
 #include "cpt_common.h"
 #include "cpt_hw_types.h"
@@ -20,10 +23,16 @@
 #define CPT_INTR_POLL_INTERVAL_MS	(50)
 
 /* Default command queue length */
-#define DEFAULT_CMD_QCHUNKS		2
-#define DEFAULT_CMD_QCHUNK_SIZE		1023
-#define DEFAULT_CMD_QLEN \
-		(DEFAULT_CMD_QCHUNK_SIZE * DEFAULT_CMD_QCHUNKS)
+#define DEFAULT_CMD_QLEN	2048
+#define DEFAULT_CMD_QCHUNKS	2
+
+/* Instruction memory benefits from being 1023, so introduce
+ * reserved entries so we can't overrun the instruction queue
+ */
+#define DEFAULT_CMD_QRSVD_SLOTS DEFAULT_CMD_QCHUNKS
+#define DEFAULT_CMD_QCHUNK_SIZE \
+		((DEFAULT_CMD_QLEN - DEFAULT_CMD_QRSVD_SLOTS) / \
+		DEFAULT_CMD_QCHUNKS)
 
 #define CPT_CSR_REG_BASE(cpt)		((cpt)->reg_base)
 
@@ -39,6 +48,9 @@
 struct cpt_instance {
 	uint32_t queue_id;
 	uintptr_t rsvd;
+	struct rte_mempool *sess_mp;
+	struct cpt_qp_meta_info meta_info;
+	uint8_t ca_enabled;
 };
 
 struct command_chunk {
@@ -65,7 +77,7 @@ struct command_queue {
 /**
  * CPT VF device structure
  */
-struct cpt_vf {
+struct __rte_cache_aligned cpt_vf {
 	/** CPT instance */
 	struct cpt_instance instance;
 	/** Register start address */
@@ -74,8 +86,6 @@ struct cpt_vf {
 	struct command_queue cqueue;
 	/** Pending queue information */
 	struct pending_queue pqueue;
-	/** Meta information per vf */
-	struct cptvf_meta_info meta_info;
 
 	/** Below fields are accessed only in control path */
 
@@ -101,7 +111,7 @@ struct cpt_vf {
 
 	/** Device name */
 	char dev_name[32];
-} __rte_cache_aligned;
+};
 
 /*
  * CPT Registers map for 81xx
@@ -154,7 +164,8 @@ int
 otx_cpt_deinit_device(void *dev);
 
 int
-otx_cpt_get_resource(void *dev, uint8_t group, struct cpt_instance **instance);
+otx_cpt_get_resource(const struct rte_cryptodev *dev, uint8_t group,
+		     struct cpt_instance **instance, uint16_t qp_id);
 
 int
 otx_cpt_put_resource(struct cpt_instance *instance);
@@ -200,12 +211,12 @@ otx_cpt_ring_dbell(struct cpt_instance *instance, uint16_t count)
 static __rte_always_inline void *
 get_cpt_inst(struct command_queue *cqueue)
 {
-	CPT_LOG_DP_DEBUG("CPT queue idx %u\n", cqueue->idx);
+	CPT_LOG_DP_DEBUG("CPT queue idx %u", cqueue->idx);
 	return &cqueue->qhead[cqueue->idx * CPT_INST_SIZE];
 }
 
 static __rte_always_inline void
-fill_cpt_inst(struct cpt_instance *instance, void *req)
+fill_cpt_inst(struct cpt_instance *instance, void *req, uint64_t ucmd_w3)
 {
 	struct command_queue *cqueue;
 	cpt_inst_s_t *cpt_ist_p;
@@ -232,7 +243,7 @@ fill_cpt_inst(struct cpt_instance *instance, void *req)
 	/* MC EI2 */
 	cpt_ist_p->s8x.ei2 = user_req->ist.ei2;
 	/* MC EI3 */
-	cpt_ist_p->s8x.ei3 = user_req->ist.ei3;
+	cpt_ist_p->s8x.ei3 = ucmd_w3;
 }
 
 static __rte_always_inline void
@@ -294,9 +305,9 @@ complete:
 				" error, MC completion code : 0x%x", user_req,
 				ret);
 		}
-		CPT_LOG_DP_DEBUG("MC status %.8x\n",
+		CPT_LOG_DP_DEBUG("MC status %.8x",
 			   *((volatile uint32_t *)user_req->alternate_caddr));
-		CPT_LOG_DP_DEBUG("HW status %.8x\n",
+		CPT_LOG_DP_DEBUG("HW status %.8x",
 			   *((volatile uint32_t *)user_req->completion_addr));
 	} else if ((cptres->s8x.compcode == CPT_8X_COMP_E_SWERR) ||
 		   (cptres->s8x.compcode == CPT_8X_COMP_E_FAULT)) {

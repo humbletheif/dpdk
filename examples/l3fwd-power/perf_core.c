@@ -2,13 +2,15 @@
  * Copyright(c) 2010-2018 Intel Corporation
  */
 
+#include <ctype.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <rte_common.h>
 #include <rte_memory.h>
 #include <rte_lcore.h>
-#include <rte_power.h>
+#include <rte_power_cpufreq.h>
 #include <rte_string_fns.h>
 
 #include "perf_core.h"
@@ -18,22 +20,37 @@
 static uint16_t hp_lcores[RTE_MAX_LCORE];
 static uint16_t nb_hp_lcores;
 
-struct perf_lcore_params {
+struct __rte_cache_aligned perf_lcore_params {
 	uint16_t port_id;
-	uint8_t queue_id;
+	uint16_t queue_id;
 	uint8_t high_perf;
-	uint8_t lcore_idx;
-} __rte_cache_aligned;
+	uint32_t lcore_idx;
+};
 
 static struct perf_lcore_params prf_lc_prms[MAX_LCORE_PARAMS];
 static uint16_t nb_prf_lc_prms;
+
+static int
+is_hp_core(unsigned int lcore)
+{
+	struct rte_power_core_capabilities caps;
+	int ret;
+
+	/* do we have power management enabled? */
+	if (rte_power_get_env() == PM_ENV_NOT_SET) {
+		/* there's no power management, so just mark it as high perf */
+		return 1;
+	}
+	ret = rte_power_get_capabilities(lcore, &caps);
+	return ret == 0 && caps.turbo;
+}
 
 int
 update_lcore_params(void)
 {
 	uint8_t non_perf_lcores[RTE_MAX_LCORE];
 	uint16_t nb_non_perf_lcores = 0;
-	int i, j, ret;
+	int i, j;
 
 	/* if perf-config option was not used do nothing */
 	if (nb_prf_lc_prms == 0)
@@ -42,13 +59,9 @@ update_lcore_params(void)
 	/* if high-perf-cores option was not used query every available core */
 	if (nb_hp_lcores == 0) {
 		for (i = 0; i < RTE_MAX_LCORE; i++) {
-			if (rte_lcore_is_enabled(i)) {
-				struct rte_power_core_capabilities caps;
-				ret = rte_power_get_capabilities(i, &caps);
-				if (ret == 0 && caps.turbo) {
-					hp_lcores[nb_hp_lcores] = i;
-					nb_hp_lcores++;
-				}
+			if (rte_lcore_is_enabled(i) && is_hp_core(i)) {
+				hp_lcores[nb_hp_lcores] = i;
+				nb_hp_lcores++;
 			}
 		}
 	}
@@ -119,6 +132,12 @@ parse_perf_config(const char *q_arg)
 	char *str_fld[_NUM_FLD];
 	int i;
 	unsigned int size;
+	unsigned int max_fld[_NUM_FLD] = {
+		RTE_MAX_ETHPORTS,
+		RTE_MAX_QUEUES_PER_PORT,
+		255,
+		RTE_MAX_LCORE
+	};
 
 	nb_prf_lc_prms = 0;
 
@@ -139,7 +158,8 @@ parse_perf_config(const char *q_arg)
 		for (i = 0; i < _NUM_FLD; i++) {
 			errno = 0;
 			int_fld[i] = strtoul(str_fld[i], &end, 0);
-			if (errno != 0 || end == str_fld[i] || int_fld[i] > 255)
+			if (errno != 0 || end == str_fld[i] || int_fld[i] > max_fld[i])
+
 				return -1;
 		}
 		if (nb_prf_lc_prms >= MAX_LCORE_PARAMS) {
@@ -148,13 +168,13 @@ parse_perf_config(const char *q_arg)
 			return -1;
 		}
 		prf_lc_prms[nb_prf_lc_prms].port_id =
-				(uint8_t)int_fld[FLD_PORT];
+				(uint16_t)int_fld[FLD_PORT];
 		prf_lc_prms[nb_prf_lc_prms].queue_id =
-				(uint8_t)int_fld[FLD_QUEUE];
+				(uint16_t)int_fld[FLD_QUEUE];
 		prf_lc_prms[nb_prf_lc_prms].high_perf =
 				!!(uint8_t)int_fld[FLD_LCORE_HP];
 		prf_lc_prms[nb_prf_lc_prms].lcore_idx =
-				(uint8_t)int_fld[FLD_LCORE_IDX];
+				(uint32_t)int_fld[FLD_LCORE_IDX];
 		++nb_prf_lc_prms;
 	}
 
@@ -227,4 +247,3 @@ parse_perf_core_list(const char *corelist)
 
 	return 0;
 }
-

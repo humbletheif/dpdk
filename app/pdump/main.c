@@ -13,6 +13,7 @@
 #include <net/if.h>
 
 #include <rte_eal.h>
+#include <rte_alarm.h>
 #include <rte_common.h>
 #include <rte_debug.h>
 #include <rte_ethdev.h>
@@ -28,6 +29,9 @@
 #include <rte_pdump.h>
 
 #define CMD_LINE_OPT_PDUMP "pdump"
+#define CMD_LINE_OPT_PDUMP_NUM 256
+#define CMD_LINE_OPT_MULTI "multi"
+#define CMD_LINE_OPT_MULTI_NUM 257
 #define PDUMP_PORT_ARG "port"
 #define PDUMP_PCI_ARG "device_id"
 #define PDUMP_QUEUE_ARG "queue"
@@ -62,6 +66,8 @@
 #define SIZE 256
 #define BURST_SIZE 32
 #define NUM_VDEVS 2
+/* Maximum delay for exiting after primary process. */
+#define MONITOR_INTERVAL (500 * 1000)
 
 /* true if x is a power of 2 */
 #define POWEROF2(x) ((((x)-1) & (x)) == 0)
@@ -100,7 +106,7 @@ struct pdump_stats {
 	uint64_t freed_pkts;
 };
 
-struct pdump_tuples {
+struct __rte_cache_aligned pdump_tuples {
 	/* cli params */
 	uint16_t port;
 	char *device_id;
@@ -127,7 +133,7 @@ struct pdump_tuples {
 
 	/* stats */
 	struct pdump_stats stats;
-} __rte_cache_aligned;
+};
 static struct pdump_tuples pdump_t[APP_ARG_TCPDUMP_MAX_TUPLES];
 
 struct parse_val {
@@ -139,12 +145,15 @@ struct parse_val {
 static int num_tuples;
 static struct rte_eth_conf port_conf_default;
 static volatile uint8_t quit_signal;
+static uint8_t multiple_core_capture;
 
 /**< display usage */
 static void
 pdump_usage(const char *prgname)
 {
-	printf("usage: %s [EAL options] -- --pdump "
+	printf("usage: %s [EAL options] --"
+			" --["CMD_LINE_OPT_MULTI"]\n"
+			" --"CMD_LINE_OPT_PDUMP" "
 			"'(port=<port id> | device_id=<pci id or vdev name>),"
 			"(queue=<queue_id>),"
 			"(rx-dev=<iface or pcap file> |"
@@ -162,6 +171,9 @@ parse_device_id(const char *key __rte_unused, const char *value,
 	struct pdump_tuples *pt = extra_args;
 
 	pt->device_id = strdup(value);
+	if (pt->device_id == NULL)
+		return -1;
+
 	pt->dump_by_type = DEVICE_ID;
 
 	return 0;
@@ -189,12 +201,12 @@ parse_rxtxdev(const char *key, const char *value, void *extra_args)
 	struct pdump_tuples *pt = extra_args;
 
 	if (!strcmp(key, PDUMP_RX_DEV_ARG)) {
-		snprintf(pt->rx_dev, sizeof(pt->rx_dev), "%s", value);
+		strlcpy(pt->rx_dev, value, sizeof(pt->rx_dev));
 		/* identify the tx stream type for pcap vdev */
 		if (if_nametoindex(pt->rx_dev))
 			pt->rx_vdev_stream_type = IFACE;
 	} else if (!strcmp(key, PDUMP_TX_DEV_ARG)) {
-		snprintf(pt->tx_dev, sizeof(pt->tx_dev), "%s", value);
+		strlcpy(pt->tx_dev, value, sizeof(pt->tx_dev));
 		/* identify the tx stream type for pcap vdev */
 		if (if_nametoindex(pt->tx_dev))
 			pt->tx_vdev_stream_type = IFACE;
@@ -375,7 +387,8 @@ launch_args_parse(int argc, char **argv, char *prgname)
 	int opt, ret;
 	int option_index;
 	static struct option long_option[] = {
-		{"pdump", 1, 0, 0},
+		{CMD_LINE_OPT_PDUMP, 1, 0, CMD_LINE_OPT_PDUMP_NUM},
+		{CMD_LINE_OPT_MULTI, 0, 0, CMD_LINE_OPT_MULTI_NUM},
 		{NULL, 0, 0, 0}
 	};
 
@@ -386,16 +399,15 @@ launch_args_parse(int argc, char **argv, char *prgname)
 	while ((opt = getopt_long(argc, argv, " ",
 			long_option, &option_index)) != EOF) {
 		switch (opt) {
-		case 0:
-			if (!strncmp(long_option[option_index].name,
-					CMD_LINE_OPT_PDUMP,
-					sizeof(CMD_LINE_OPT_PDUMP))) {
-				ret = parse_pdump(optarg);
-				if (ret) {
-					pdump_usage(prgname);
-					return -1;
-				}
+		case CMD_LINE_OPT_PDUMP_NUM:
+			ret = parse_pdump(optarg);
+			if (ret) {
+				pdump_usage(prgname);
+				return -1;
 			}
+			break;
+		case CMD_LINE_OPT_MULTI_NUM:
+			multiple_core_capture = 1;
 			break;
 		default:
 			pdump_usage(prgname);
@@ -404,6 +416,21 @@ launch_args_parse(int argc, char **argv, char *prgname)
 	}
 
 	return 0;
+}
+
+static void
+monitor_primary(void *arg __rte_unused)
+{
+	if (quit_signal)
+		return;
+
+	if (rte_eal_primary_proc_alive(NULL)) {
+		rte_eal_alarm_set(MONITOR_INTERVAL, monitor_primary, NULL);
+		return;
+	}
+
+	printf("Primary process is no longer active, exiting...\n");
+	quit_signal = 1;
 }
 
 static void
@@ -453,10 +480,10 @@ pdump_rxtx(struct rte_ring *ring, uint16_t vdev_id, struct pdump_stats *stats)
 		stats->tx_pkts += nb_in_txd;
 
 		if (unlikely(nb_in_txd < nb_in_deq)) {
-			do {
-				rte_pktmbuf_free(rxtx_bufs[nb_in_txd]);
-				stats->freed_pkts++;
-			} while (++nb_in_txd < nb_in_deq);
+			unsigned int drops = nb_in_deq - nb_in_txd;
+
+			rte_pktmbuf_free_bulk(&rxtx_bufs[nb_in_txd], drops);
+			stats->freed_pkts += drops;
 		}
 	}
 }
@@ -478,14 +505,12 @@ cleanup_rings(void)
 	for (i = 0; i < num_tuples; i++) {
 		pt = &pdump_t[i];
 
-		if (pt->device_id)
-			free(pt->device_id);
+		free(pt->device_id);
 
 		/* free the rings */
-		if (pt->rx_ring)
-			rte_ring_free(pt->rx_ring);
-		if (pt->tx_ring)
-			rte_ring_free(pt->tx_ring);
+		rte_ring_free(pt->rx_ring);
+		rte_ring_free(pt->tx_ring);
+		rte_mempool_free(pt->mp);
 	}
 }
 
@@ -512,31 +537,49 @@ cleanup_pdump_resources(void)
 		if (pt->dir & RTE_PDUMP_FLAG_TX)
 			free_ring_data(pt->tx_ring, pt->tx_vdev_id, &pt->stats);
 
-		/* Remove the vdev created */
-		rte_eth_dev_get_name_by_port(pt->rx_vdev_id, name);
-		rte_eal_hotplug_remove("vdev", name);
+		/* Remove the vdev(s) created */
+		if (pt->dir & RTE_PDUMP_FLAG_RX) {
+			rte_eth_dev_get_name_by_port(pt->rx_vdev_id, name);
+			rte_eal_hotplug_remove("vdev", name);
+		}
 
-		rte_eth_dev_get_name_by_port(pt->tx_vdev_id, name);
-		rte_eal_hotplug_remove("vdev", name);
+		if (pt->single_pdump_dev)
+			continue;
+
+		if (pt->dir & RTE_PDUMP_FLAG_TX) {
+			rte_eth_dev_get_name_by_port(pt->tx_vdev_id, name);
+			rte_eal_hotplug_remove("vdev", name);
+		}
 
 	}
 	cleanup_rings();
 }
 
 static void
-signal_handler(int sig_num)
+disable_primary_monitor(void)
 {
-	if (sig_num == SIGINT) {
-		printf("\n\nSignal %d received, preparing to exit...\n",
-				sig_num);
-		quit_signal = 1;
-	}
+	int ret;
+
+	/*
+	 * Cancel monitoring of primary process.
+	 * There will be no error if no alarm is set
+	 * (in case primary process kill was detected earlier).
+	 */
+	ret = rte_eal_alarm_cancel(monitor_primary, NULL);
+	if (ret < 0)
+		printf("Fail to disable monitor:%d\n", ret);
+}
+
+static void
+signal_handler(int sig_num __rte_unused)
+{
+	quit_signal = 1;
 }
 
 static inline int
 configure_vdev(uint16_t port_id)
 {
-	struct ether_addr addr;
+	struct rte_ether_addr addr;
 	const uint16_t rxRings = 0, txRings = 1;
 	int ret;
 	uint16_t q;
@@ -549,7 +592,7 @@ configure_vdev(uint16_t port_id)
 	if (ret != 0)
 		rte_exit(EXIT_FAILURE, "dev config failed\n");
 
-	 for (q = 0; q < txRings; q++) {
+	for (q = 0; q < txRings; q++) {
 		ret = rte_eth_tx_queue_setup(port_id, q, TX_DESC_PER_QUEUE,
 				rte_eth_dev_socket_id(port_id), NULL);
 		if (ret < 0)
@@ -560,15 +603,21 @@ configure_vdev(uint16_t port_id)
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "dev start failed\n");
 
-	rte_eth_macaddr_get(port_id, &addr);
+	ret = rte_eth_macaddr_get(port_id, &addr);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE, "macaddr get failed\n");
+
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
-			port_id,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			port_id, RTE_ETHER_ADDR_BYTES(&addr));
 
-	rte_eth_promiscuous_enable(port_id);
+	ret = rte_eth_promiscuous_enable(port_id);
+	if (ret != 0) {
+		rte_exit(EXIT_FAILURE,
+			 "promiscuous mode enable failed: %s\n",
+			 rte_strerror(-ret));
+		return ret;
+	}
 
 	return 0;
 }
@@ -591,11 +640,11 @@ create_mp_ring_vdev(void)
 		mbuf_pool = rte_mempool_lookup(mempool_name);
 		if (mbuf_pool == NULL) {
 			/* create mempool */
-			mbuf_pool = rte_pktmbuf_pool_create(mempool_name,
+			mbuf_pool = rte_pktmbuf_pool_create_by_ops(mempool_name,
 					pt->total_num_mbufs,
 					MBUF_POOL_CACHE_SIZE, 0,
 					pt->mbuf_data_size,
-					rte_socket_id());
+					rte_socket_id(), "ring_mp_mc");
 			if (mbuf_pool == NULL) {
 				cleanup_rings();
 				rte_exit(EXIT_FAILURE,
@@ -828,48 +877,132 @@ enable_pdump(void)
 }
 
 static inline void
+pdump_packets(struct pdump_tuples *pt)
+{
+	if (pt->dir & RTE_PDUMP_FLAG_RX)
+		pdump_rxtx(pt->rx_ring, pt->rx_vdev_id, &pt->stats);
+	if (pt->dir & RTE_PDUMP_FLAG_TX)
+		pdump_rxtx(pt->tx_ring, pt->tx_vdev_id, &pt->stats);
+}
+
+static int
+dump_packets_core(void *arg)
+{
+	struct pdump_tuples *pt = (struct pdump_tuples *) arg;
+
+	printf(" core (%u); port %u device (%s) queue %u\n",
+			rte_lcore_id(), pt->port, pt->device_id, pt->queue);
+	fflush(stdout);
+
+	while (!quit_signal)
+		pdump_packets(pt);
+
+	return 0;
+}
+
+static unsigned int
+get_next_core(unsigned int lcore)
+{
+	lcore = rte_get_next_lcore(lcore, 1, 0);
+	if (lcore == RTE_MAX_LCORE)
+		rte_exit(EXIT_FAILURE,
+				"Max core limit %u reached for packet capture", lcore);
+	return lcore;
+}
+
+static inline void
 dump_packets(void)
 {
 	int i;
-	struct pdump_tuples *pt;
+	unsigned int lcore_id = 0;
 
-	while (!quit_signal) {
-		for (i = 0; i < num_tuples; i++) {
-			pt = &pdump_t[i];
-			if (pt->dir & RTE_PDUMP_FLAG_RX)
-				pdump_rxtx(pt->rx_ring, pt->rx_vdev_id,
-					&pt->stats);
-			if (pt->dir & RTE_PDUMP_FLAG_TX)
-				pdump_rxtx(pt->tx_ring, pt->tx_vdev_id,
-					&pt->stats);
+	if (num_tuples == 0)
+		rte_exit(EXIT_FAILURE, "No device specified for capture\n");
+
+	if (!multiple_core_capture) {
+		printf(" core (%u), capture for (%d) tuples\n",
+				rte_lcore_id(), num_tuples);
+
+		for (i = 0; i < num_tuples; i++)
+			printf(" - port %u device (%s) queue %u\n",
+				pdump_t[i].port,
+				pdump_t[i].device_id,
+				pdump_t[i].queue);
+
+		while (!quit_signal) {
+			for (i = 0; i < num_tuples; i++)
+				pdump_packets(&pdump_t[i]);
 		}
+
+		return;
 	}
+
+	/* check if there enough core */
+	if ((uint32_t)num_tuples >= rte_lcore_count()) {
+		printf("Insufficient cores to run parallel!\n");
+		return;
+	}
+
+	lcore_id = get_next_core(lcore_id);
+
+	for (i = 0; i < num_tuples; i++) {
+		rte_eal_remote_launch(dump_packets_core,
+				&pdump_t[i], lcore_id);
+		lcore_id = get_next_core(lcore_id);
+
+		if (rte_eal_wait_lcore(lcore_id) < 0)
+			rte_exit(EXIT_FAILURE, "failed to wait\n");
+	}
+
+	/* main core */
+	while (!quit_signal)
+		;
+}
+
+static void
+enable_primary_monitor(void)
+{
+	int ret;
+
+	/* Once primary exits, so will pdump. */
+	ret = rte_eal_alarm_set(MONITOR_INTERVAL, monitor_primary, NULL);
+	if (ret < 0)
+		printf("Fail to enable monitor:%d\n", ret);
 }
 
 int
 main(int argc, char **argv)
 {
+	struct sigaction action = {
+		.sa_flags = SA_RESTART,
+		.sa_handler = signal_handler,
+	};
+	struct sigaction origaction;
 	int diag;
 	int ret;
 	int i;
 
-	char c_flag[] = "-c1";
 	char n_flag[] = "-n4";
 	char mp_flag[] = "--proc-type=secondary";
-	char *argp[argc + 3];
+	char *argp[argc + 2];
 
-	/* catch ctrl-c so we can print on exit */
-	signal(SIGINT, signal_handler);
+	/* catch ctrl-c so we can cleanup on exit */
+	sigemptyset(&action.sa_mask);
+	sigaction(SIGTERM, &action, NULL);
+	sigaction(SIGINT, &action, NULL);
+	sigaction(SIGPIPE, &action, NULL);
+	sigaction(SIGHUP, NULL, &origaction);
+	if (origaction.sa_handler == SIG_DFL)
+		sigaction(SIGHUP, &action, NULL);
 
 	argp[0] = argv[0];
-	argp[1] = c_flag;
-	argp[2] = n_flag;
-	argp[3] = mp_flag;
+	argp[1] = n_flag;
+	argp[2] = mp_flag;
 
 	for (i = 1; i < argc; i++)
-		argp[i + 3] = argv[i];
+		argp[i + 2] = argv[i];
 
-	argc += 3;
+	argc += 2;
 
 	diag = rte_eal_init(argc, argp);
 	if (diag < 0)
@@ -879,7 +1012,7 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 
 	argc -= diag;
-	argv += (diag - 3);
+	argv += (diag - 2);
 
 	/* parse app arguments */
 	if (argc > 1) {
@@ -891,8 +1024,10 @@ main(int argc, char **argv)
 	/* create mempool, ring and vdevs info */
 	create_mp_ring_vdev();
 	enable_pdump();
+	enable_primary_monitor();
 	dump_packets();
 
+	disable_primary_monitor();
 	cleanup_pdump_resources();
 	/* dump debug stats */
 	print_pdump_stats();

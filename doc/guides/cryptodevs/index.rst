@@ -13,17 +13,24 @@ Crypto Device Drivers
     aesni_mb
     aesni_gcm
     armv8
+    bcmfs
     caam_jr
     ccp
+    chacha20_poly1305
+    cnxk
     dpaa2_sec
     dpaa_sec
+    ionic
     kasumi
     octeontx
     openssl
+    mlx5
     mvsam
+    nitrox
     null
     scheduler
     snow3g
     qat
+    uadk
     virtio
     zuc

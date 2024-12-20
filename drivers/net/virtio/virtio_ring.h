@@ -15,10 +15,15 @@
 #define VRING_DESC_F_WRITE      2
 /* This means the buffer contains a list of buffer descriptors. */
 #define VRING_DESC_F_INDIRECT   4
+
 /* This flag means the descriptor was made available by the driver */
-#define VRING_DESC_F_AVAIL(b)   ((uint16_t)(b) << 7)
+#define VRING_PACKED_DESC_F_AVAIL	(1 << 7)
 /* This flag means the descriptor was used by the device */
-#define VRING_DESC_F_USED(b)    ((uint16_t)(b) << 15)
+#define VRING_PACKED_DESC_F_USED	(1 << 15)
+
+/* Frequently used combinations */
+#define VRING_PACKED_DESC_F_AVAIL_USED	(VRING_PACKED_DESC_F_AVAIL | \
+					 VRING_PACKED_DESC_F_USED)
 
 /* The Host uses this in used->flags to advise the Guest: don't kick me
  * when you add a buffer.  It's unreliable, so it's simply an
@@ -41,7 +46,7 @@ struct vring_desc {
 struct vring_avail {
 	uint16_t flags;
 	uint16_t idx;
-	uint16_t ring[0];
+	uint16_t ring[];
 };
 
 /* id is a 16bit index. uint32_t is used here for ids for padding reasons. */
@@ -54,8 +59,8 @@ struct vring_used_elem {
 
 struct vring_used {
 	uint16_t flags;
-	volatile uint16_t idx;
-	struct vring_used_elem ring[0];
+	RTE_ATOMIC(uint16_t) idx;
+	struct vring_used_elem ring[];
 };
 
 /* For support of packed virtqueues in Virtio 1.1 the format of descriptors
@@ -65,7 +70,7 @@ struct vring_packed_desc {
 	uint64_t addr;
 	uint32_t len;
 	uint16_t id;
-	uint16_t flags;
+	RTE_ATOMIC(uint16_t) flags;
 };
 
 #define RING_EVENT_FLAGS_ENABLE 0x0
@@ -78,14 +83,15 @@ struct vring_packed_desc_event {
 
 struct vring_packed {
 	unsigned int num;
-	struct vring_packed_desc *desc_packed;
-	struct vring_packed_desc_event *driver_event;
-	struct vring_packed_desc_event *device_event;
-
+	rte_iova_t desc_iova;
+	struct vring_packed_desc *desc;
+	struct vring_packed_desc_event *driver;
+	struct vring_packed_desc_event *device;
 };
 
 struct vring {
 	unsigned int num;
+	rte_iova_t desc_iova;
 	struct vring_desc  *desc;
 	struct vring_avail *avail;
 	struct vring_used  *used;
@@ -129,7 +135,7 @@ vring_size(struct virtio_hw *hw, unsigned int num, unsigned long align)
 {
 	size_t size;
 
-	if (vtpci_packed_queue(hw)) {
+	if (virtio_with_packed_queue(hw)) {
 		size = num * sizeof(struct vring_packed_desc);
 		size += sizeof(struct vring_packed_desc_event);
 		size = RTE_ALIGN_CEIL(size, align);
@@ -145,11 +151,12 @@ vring_size(struct virtio_hw *hw, unsigned int num, unsigned long align)
 	return size;
 }
 static inline void
-vring_init_split(struct vring *vr, uint8_t *p, unsigned long align,
-	 unsigned int num)
+vring_init_split(struct vring *vr, uint8_t *p, rte_iova_t iova,
+		 unsigned long align, unsigned int num)
 {
 	vr->num = num;
 	vr->desc = (struct vring_desc *) p;
+	vr->desc_iova = iova;
 	vr->avail = (struct vring_avail *) (p +
 		num * sizeof(struct vring_desc));
 	vr->used = (void *)
@@ -157,15 +164,16 @@ vring_init_split(struct vring *vr, uint8_t *p, unsigned long align,
 }
 
 static inline void
-vring_init_packed(struct vring_packed *vr, uint8_t *p, unsigned long align,
-		 unsigned int num)
+vring_init_packed(struct vring_packed *vr, uint8_t *p, rte_iova_t iova,
+		  unsigned long align, unsigned int num)
 {
 	vr->num = num;
-	vr->desc_packed = (struct vring_packed_desc *)p;
-	vr->driver_event = (struct vring_packed_desc_event *)(p +
+	vr->desc = (struct vring_packed_desc *)p;
+	vr->desc_iova = iova;
+	vr->driver = (struct vring_packed_desc_event *)(p +
 			vr->num * sizeof(struct vring_packed_desc));
-	vr->device_event = (struct vring_packed_desc_event *)
-		RTE_ALIGN_CEIL((uintptr_t)(vr->driver_event +
+	vr->device = (struct vring_packed_desc_event *)
+		RTE_ALIGN_CEIL(((uintptr_t)vr->driver +
 				sizeof(struct vring_packed_desc_event)), align);
 }
 

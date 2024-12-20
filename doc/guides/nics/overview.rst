@@ -24,6 +24,8 @@ Most of these differences are summarized below.
 
 More details about features can be found in :doc:`features`.
 
+.. rst-class:: widepage
+
 .. _table_net_pmd_features:
 
 .. include:: overview_table.txt
@@ -32,3 +34,11 @@ More details about features can be found in :doc:`features`.
 
    Features marked with "P" are partially supported. Refer to the appropriate
    NIC guide in the following sections for details.
+
+.. include:: rte_flow_items_table.txt
+
+.. include:: rte_flow_actions_table.txt
+
+.. Note::
+
+   rte_flow actions marked with "I" can be indirect as well.

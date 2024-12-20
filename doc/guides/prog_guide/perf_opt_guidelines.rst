@@ -1,10 +1,6 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2014 Intel Corporation.
 
-.. _Performance_Optimization:
-
-**Part 3: Performance Optimization**
-
 Performance Optimization Guidelines
 ===================================
 

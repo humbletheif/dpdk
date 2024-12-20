@@ -1,17 +1,19 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2011-2016 Freescale Semiconductor Inc.
- * Copyright 2017 NXP
+ * Copyright 2017,2020,2022,2024 NXP
  *
  */
 #include <assert.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <rte_ethdev.h>
 
 #include "process.h"
 
 #include <fsl_usd.h>
+#include "rte_dpaa_logs.h"
 
 /* As higher-level drivers will be built on top of this (dma_mem, qbman, ...),
  * it's preferable that the process driver itself not provide any exported API.
@@ -26,15 +28,16 @@ static int check_fd(void)
 {
 	int ret;
 
-	if (fd >= 0)
-		return 0;
 	ret = pthread_mutex_lock(&fd_init_lock);
 	assert(!ret);
+
 	/* check again with the lock held */
 	if (fd < 0)
 		fd = open(PROCESS_PATH, O_RDWR);
+
 	ret = pthread_mutex_unlock(&fd_init_lock);
 	assert(!ret);
+
 	return (fd >= 0) ? 0 : -ENODEV;
 }
 
@@ -98,12 +101,12 @@ void process_release(enum dpaa_id_type id_type, uint32_t base, uint32_t num)
 	int ret = check_fd();
 
 	if (ret) {
-		fprintf(stderr, "Process FD failure\n");
+		DPAA_BUS_ERR("Process FD failure");
 		return;
 	}
 	ret = ioctl(fd, DPAA_IOCTL_ID_RELEASE, &id);
 	if (ret)
-		fprintf(stderr, "Process FD ioctl failure type %d base 0x%x num %d\n",
+		DPAA_BUS_ERR("Process FD ioctl failure type %d base 0x%x num %d",
 			id_type, base, num);
 }
 
@@ -295,4 +298,199 @@ int bman_free_raw_portal(struct dpaa_raw_portal *portal)
 	input.cena = portal->cena;
 
 	return process_portal_free(&input);
+}
+
+#define DPAA_IOCTL_ENABLE_LINK_STATUS_INTERRUPT \
+	_IOW(DPAA_IOCTL_MAGIC, 0x0E, struct usdpaa_ioctl_link_status)
+
+#define DPAA_IOCTL_DISABLE_LINK_STATUS_INTERRUPT \
+	_IOW(DPAA_IOCTL_MAGIC, 0x0F, char[IF_NAME_MAX_LEN])
+
+int dpaa_intr_enable(char *if_name, int efd)
+{
+	struct usdpaa_ioctl_link_status args;
+
+	int ret = check_fd();
+
+	if (ret)
+		return ret;
+
+	args.efd = (uint32_t)efd;
+	strcpy(args.if_name, if_name);
+
+	ret = ioctl(fd, DPAA_IOCTL_ENABLE_LINK_STATUS_INTERRUPT, &args);
+	if (ret)
+		return errno;
+
+	return 0;
+}
+
+int dpaa_intr_disable(char *if_name)
+{
+	int ret = check_fd();
+
+	if (ret)
+		return ret;
+
+	ret = ioctl(fd, DPAA_IOCTL_DISABLE_LINK_STATUS_INTERRUPT, if_name);
+	if (ret) {
+		if (errno == EINVAL)
+			DPAA_BUS_ERR("Failed to disable interrupt: Not Supported");
+		else
+			DPAA_BUS_ERR("Failed to disable interrupt");
+		return ret;
+	}
+
+	return 0;
+}
+
+#define DPAA_IOCTL_GET_IOCTL_VERSION \
+	_IOR(DPAA_IOCTL_MAGIC, 0x14, int)
+
+int dpaa_get_ioctl_version_number(void)
+{
+	int version_num, ret = check_fd();
+
+	if (ret)
+		return ret;
+
+	ret = ioctl(fd, DPAA_IOCTL_GET_IOCTL_VERSION, &version_num);
+	if (ret) {
+		if (errno == EINVAL) {
+			version_num = 1;
+		} else {
+			DPAA_BUS_ERR("Failed to get ioctl version number");
+			version_num = -1;
+		}
+	}
+
+	return version_num;
+}
+
+#define DPAA_IOCTL_GET_LINK_STATUS \
+	_IOWR(DPAA_IOCTL_MAGIC, 0x10, struct usdpaa_ioctl_link_status_args)
+
+#define DPAA_IOCTL_GET_LINK_STATUS_OLD \
+	_IOWR(DPAA_IOCTL_MAGIC, 0x10, struct usdpaa_ioctl_link_status_args_old)
+
+
+int dpaa_get_link_status(char *if_name, struct rte_eth_link *link)
+{
+	int ioctl_version, ret = check_fd();
+
+	if (ret)
+		return ret;
+
+	ioctl_version = dpaa_get_ioctl_version_number();
+
+	if (ioctl_version == 2) {
+		struct usdpaa_ioctl_link_status_args args;
+
+		strcpy(args.if_name, if_name);
+
+		ret = ioctl(fd, DPAA_IOCTL_GET_LINK_STATUS, &args);
+		if (ret) {
+			DPAA_BUS_ERR("Failed to get link status");
+			return ret;
+		}
+
+		link->link_status = args.link_status;
+		link->link_speed = args.link_speed;
+		link->link_duplex = args.link_duplex;
+		link->link_autoneg = args.link_autoneg;
+	} else {
+		struct usdpaa_ioctl_link_status_args_old args;
+
+		strcpy(args.if_name, if_name);
+
+		ret = ioctl(fd, DPAA_IOCTL_GET_LINK_STATUS_OLD, &args);
+		if (ret) {
+			if (errno == EINVAL)
+				DPAA_BUS_ERR("Get link status: Not Supported");
+			else
+				DPAA_BUS_ERR("Failed to get link status");
+			return ret;
+		}
+
+		link->link_status = args.link_status;
+	}
+
+	return 0;
+}
+
+#define DPAA_IOCTL_UPDATE_LINK_STATUS \
+	_IOW(DPAA_IOCTL_MAGIC, 0x11, struct usdpaa_ioctl_update_link_status_args)
+
+int dpaa_update_link_status(char *if_name, int link_status)
+{
+	struct usdpaa_ioctl_update_link_status_args args;
+	int ret;
+
+	ret = check_fd();
+	if (ret)
+		return ret;
+
+	strcpy(args.if_name, if_name);
+	args.link_status = link_status;
+
+	ret = ioctl(fd, DPAA_IOCTL_UPDATE_LINK_STATUS, &args);
+	if (ret) {
+		if (errno == EINVAL)
+			DPAA_BUS_ERR("Failed to set link status: Not Supported");
+		else
+			DPAA_BUS_ERR("Failed to set link status");
+		return ret;
+	}
+
+	return 0;
+}
+
+#define DPAA_IOCTL_UPDATE_LINK_SPEED \
+	_IOW(DPAA_IOCTL_MAGIC, 0x12, struct usdpaa_ioctl_update_link_speed)
+
+int dpaa_update_link_speed(char *if_name, int link_speed, int link_duplex)
+{
+	struct usdpaa_ioctl_update_link_speed args;
+	int ret;
+
+	ret = check_fd();
+	if (ret)
+		return ret;
+
+	strcpy(args.if_name, if_name);
+	args.link_speed = link_speed;
+	args.link_duplex = link_duplex;
+
+	ret = ioctl(fd, DPAA_IOCTL_UPDATE_LINK_SPEED, &args);
+	if (ret) {
+		if (errno == EINVAL)
+			DPAA_BUS_ERR("Failed to set link speed: Not Supported");
+		else
+			DPAA_BUS_ERR("Failed to set link speed");
+		return ret;
+	}
+
+	return ret;
+}
+
+#define DPAA_IOCTL_RESTART_LINK_AUTONEG \
+	_IOW(DPAA_IOCTL_MAGIC, 0x13, char[IF_NAME_MAX_LEN])
+
+int dpaa_restart_link_autoneg(char *if_name)
+{
+	int ret = check_fd();
+
+	if (ret)
+		return ret;
+
+	ret = ioctl(fd, DPAA_IOCTL_RESTART_LINK_AUTONEG, if_name);
+	if (ret) {
+		if (errno == EINVAL)
+			DPAA_BUS_ERR("Failed to restart autoneg: Not Supported");
+		else
+			DPAA_BUS_ERR("Failed to restart autoneg");
+		return ret;
+	}
+
+	return ret;
 }

@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2018 HUAWEI TECHNOLOGIES CO., LTD.
  */
-#include <rte_cryptodev_pmd.h>
+#include <cryptodev_pmd.h>
 
 #include "virtqueue.h"
 #include "virtio_cryptodev.h"
@@ -203,12 +203,11 @@ virtqueue_crypto_sym_enqueue_xmit(
 	uint16_t req_data_len = sizeof(struct virtio_crypto_op_data_req);
 	uint32_t indirect_vring_addr_offset = req_data_len +
 		sizeof(struct virtio_crypto_inhdr);
-	uint32_t indirect_iv_addr_offset = indirect_vring_addr_offset +
-			sizeof(struct vring_desc) * NUM_ENTRY_VIRTIO_CRYPTO_OP;
+	uint32_t indirect_iv_addr_offset =
+			offsetof(struct virtio_crypto_op_cookie, iv);
 	struct rte_crypto_sym_op *sym_op = cop->sym;
 	struct virtio_crypto_session *session =
-		(struct virtio_crypto_session *)get_sym_session_private_data(
-		cop->sym->session, cryptodev_virtio_driver_id);
+		CRYPTODEV_GET_SYM_SESS_PRIV(cop->sym->session);
 	struct virtio_crypto_op_data_req *op_data_req;
 	uint32_t hash_result_len = 0;
 	struct virtio_crypto_op_cookie *crypto_op_cookie;
@@ -264,6 +263,9 @@ virtqueue_crypto_sym_enqueue_xmit(
 		if (cop->phys_addr)
 			desc[idx].addr = cop->phys_addr + session->iv.offset;
 		else {
+			if (session->iv.length > VIRTIO_CRYPTO_MAX_IV_SIZE)
+				return -ENOMEM;
+
 			rte_memcpy(crypto_op_cookie->iv,
 					rte_crypto_op_ctod_offset(cop,
 					uint8_t *, session->iv.offset),
@@ -284,18 +286,18 @@ virtqueue_crypto_sym_enqueue_xmit(
 	}
 
 	/* indirect vring: src data */
-	desc[idx].addr = rte_pktmbuf_mtophys_offset(sym_op->m_src, 0);
+	desc[idx].addr = rte_pktmbuf_iova_offset(sym_op->m_src, 0);
 	desc[idx].len = (sym_op->cipher.data.offset
 		+ sym_op->cipher.data.length);
 	desc[idx++].flags = VRING_DESC_F_NEXT;
 
 	/* indirect vring: dst data */
 	if (sym_op->m_dst) {
-		desc[idx].addr = rte_pktmbuf_mtophys_offset(sym_op->m_dst, 0);
+		desc[idx].addr = rte_pktmbuf_iova_offset(sym_op->m_dst, 0);
 		desc[idx].len = (sym_op->cipher.data.offset
 			+ sym_op->cipher.data.length);
 	} else {
-		desc[idx].addr = rte_pktmbuf_mtophys_offset(sym_op->m_src, 0);
+		desc[idx].addr = rte_pktmbuf_iova_offset(sym_op->m_src, 0);
 		desc[idx].len = (sym_op->cipher.data.offset
 			+ sym_op->cipher.data.length);
 	}

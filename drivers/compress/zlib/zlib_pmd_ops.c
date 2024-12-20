@@ -4,6 +4,7 @@
 
 #include <string.h>
 
+#include <dev_driver.h>
 #include <rte_common.h>
 #include <rte_malloc.h>
 
@@ -47,8 +48,8 @@ zlib_pmd_config(struct rte_compressdev *dev,
 				NULL, config->socket_id,
 				0);
 		if (mp == NULL) {
-			ZLIB_PMD_ERR("Cannot create private xform pool on "
-			"socket %d\n", config->socket_id);
+			ZLIB_PMD_ERR("Cannot create private xform pool on socket %d",
+				config->socket_id);
 			return -ENOMEM;
 		}
 		internals->mp = mp;

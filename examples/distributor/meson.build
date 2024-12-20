@@ -6,7 +6,8 @@
 # To build this example as a standalone application with an already-installed
 # DPDK instance, use 'make'
 
-deps += 'distributor'
+allow_experimental_apis = true
+deps += ['distributor', 'power']
 sources = files(
-	'main.c'
+        'main.c',
 )

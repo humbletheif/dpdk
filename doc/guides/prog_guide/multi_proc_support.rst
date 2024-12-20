@@ -1,8 +1,6 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2010-2014 Intel Corporation.
 
-.. _Multi-process_Support:
-
 Multi-process Support
 =====================
 
@@ -30,7 +28,7 @@ after a primary process has already configured the hugepage shared memory for th
     Secondary processes should run alongside primary process with same DPDK version.
 
     Secondary processes which requires access to physical devices in Primary process, must
-    be passed with the same whitelist and blacklist options.
+    be passed with the same allow and block options.
 
 To support these two process types, and other multi-process setups described later,
 two additional command-line parameters are available to the EAL:
@@ -75,7 +73,7 @@ and point to the same objects, in both processes.
 
 
 The EAL also supports an auto-detection mode (set by EAL ``--proc-type=auto`` flag ),
-whereby an DPDK process is started as a secondary instance if a primary instance is already running.
+whereby a DPDK process is started as a secondary instance if a primary instance is already running.
 
 Deployment Models
 -----------------
@@ -107,15 +105,19 @@ Running Multiple Independent DPDK Applications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 In addition to the above scenarios involving multiple DPDK processes working together,
-it is possible to run multiple DPDK processes side-by-side,
+it is possible to run multiple DPDK processes concurrently,
 where those processes are all working independently.
 Support for this usage scenario is provided using the ``--file-prefix`` parameter to the EAL.
 
-By default, the EAL creates hugepage files on each hugetlbfs filesystem using the rtemap_X filename,
+The EAL puts shared runtime files in a directory based on standard conventions.
+If ``$RUNTIME_DIRECTORY`` is defined in the environment,
+it is used (as ``$RUNTIME_DIRECTORY/dpdk``).
+Otherwise, if DPDK is run as root user, it uses ``/var/run/dpdk``
+or if run as non-root user then the ``/tmp/dpdk`` (or ``$XDG_RUNTIME_DIRECTORY/dpdk``) is used.
+Hugepage files on each hugetlbfs filesystem use the ``rtemap_X`` filename,
 where X is in the range 0 to the maximum number of hugepages -1.
-Similarly, it creates shared configuration files, memory mapped in each process, using the /var/run/.rte_config filename,
-when run as root (or $HOME/.rte_config when run as a non-root user;
-if filesystem and device permissions are set up to allow this).
+Similarly, it creates shared configuration files, memory mapped in each process,
+using the ``.rte_config`` filename.
 The rte part of the filenames of each of the above is configurable using the file-prefix parameter.
 
 In addition to specifying the file-prefix parameter,
@@ -131,7 +133,7 @@ can use).
 .. note::
 
     Independent DPDK instances running side-by-side on a single machine cannot share any network ports.
-    Any network ports being used by one process should be blacklisted in every other process.
+    Any network ports being used by one process should be blocked by every other process.
 
 Running Multiple Independent Groups of DPDK Applications
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -176,7 +178,7 @@ Some of these are documented below:
 
 *   The use of function pointers between multiple processes running based of different compiled binaries is not supported,
     since the location of a given function in one process may be different to its location in a second.
-    This prevents the librte_hash library from behaving properly as in a multi-threaded instance,
+    This prevents the librte_hash library from behaving properly as in a multi-process instance,
     since it uses a pointer to the hash function internally.
 
 To work around this issue, it is recommended that multi-process applications perform the hash calculations by directly calling
@@ -263,9 +265,9 @@ To send a request, a message descriptor ``rte_mp_msg`` must be populated.
 Additionally, a ``timespec`` value must be specified as a timeout, after which
 IPC will stop waiting and return.
 
-For synchronous synchronous requests, the ``rte_mp_reply`` descriptor must also
-be created. This is where the responses will be stored. The list of fields that
-will be populated by IPC are as follows:
+For synchronous requests, the ``rte_mp_reply`` descriptor must also be created.
+This is where the responses will be stored.
+The list of fields that will be populated by IPC are as follows:
 
 * ``nb_sent`` - number indicating how many requests were sent (i.e. how many
   peer processes were active at the time of the request).
@@ -273,7 +275,7 @@ will be populated by IPC are as follows:
   those peer processes that were active at the time of request, how many have
   replied)
 * ``msgs`` - pointer to where all of the responses are stored. The order in
-  which responses appear is undefined. Whendoing sycnrhonous requests, this
+  which responses appear is undefined. When doing synchronous requests, this
   memory must be freed by the requestor after request completes!
 
 For asynchronous requests, a function pointer to the callback function must be
@@ -309,6 +311,13 @@ If a response is required, a new ``rte_mp_msg`` message descriptor must be
 constructed and sent via ``rte_mp_reply()`` function, along with ``peer``
 pointer. The resulting response will then be delivered to the correct requestor.
 
+.. warning::
+    Simply returning a value when processing a request callback will not send a
+    response to the request - it must always be explicitly sent even in case
+    of errors. Implementation of error signalling rests with the application,
+    there is no built-in way to indicate success or error for a request. Failing
+    to do so will cause the requestor to time out while waiting on a response.
+
 Misc considerations
 ~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -317,6 +326,11 @@ requests (i.e. sending a request while responding to another request) is not
 supported. However, since sending messages (not requests) does not involve an
 IPC thread, sending messages while processing another message or request is
 supported.
+
+Since the memory subsystem uses IPC internally, memory allocations and IPC must
+not be mixed: it is not safe to use IPC inside a memory-related callback, nor is
+it safe to allocate/free memory inside IPC callbacks. Attempting to do so may
+lead to a deadlock.
 
 Asynchronous request callbacks may be triggered either from IPC thread or from
 interrupt thread, depending on whether the request has timed out. It is

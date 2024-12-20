@@ -4,7 +4,7 @@
 
 #include <inttypes.h>
 
-#include <rte_ethdev_driver.h>
+#include <ethdev_driver.h>
 #include <rte_common.h>
 #include <rte_net.h>
 #include "fm10k.h"
@@ -16,7 +16,7 @@
 #define rte_packet_prefetch(p)  do {} while (0)
 #endif
 
-#ifdef RTE_LIBRTE_FM10K_DEBUG_RX
+#ifdef RTE_ETHDEV_DEBUG_RX
 static inline void dump_rxd(union fm10k_rx_desc *rxd)
 {
 	PMD_RX_LOG(DEBUG, "+----------------|----------------+");
@@ -37,16 +37,15 @@ static inline void dump_rxd(union fm10k_rx_desc *rxd)
 }
 #endif
 
-#define FM10K_TX_OFFLOAD_MASK (  \
-		PKT_TX_VLAN_PKT |        \
-		PKT_TX_IPV6 |            \
-		PKT_TX_IPV4 |            \
-		PKT_TX_IP_CKSUM |        \
-		PKT_TX_L4_MASK |         \
-		PKT_TX_TCP_SEG)
+#define FM10K_TX_OFFLOAD_MASK (RTE_MBUF_F_TX_VLAN |        \
+		RTE_MBUF_F_TX_IPV6 |            \
+		RTE_MBUF_F_TX_IPV4 |            \
+		RTE_MBUF_F_TX_IP_CKSUM |        \
+		RTE_MBUF_F_TX_L4_MASK |         \
+		RTE_MBUF_F_TX_TCP_SEG)
 
 #define FM10K_TX_OFFLOAD_NOTSUP_MASK \
-		(PKT_TX_OFFLOAD_MASK ^ FM10K_TX_OFFLOAD_MASK)
+		(RTE_MBUF_F_TX_OFFLOAD_MASK ^ FM10K_TX_OFFLOAD_MASK)
 
 /* @note: When this function is changed, make corresponding change to
  * fm10k_dev_supported_ptypes_get()
@@ -54,9 +53,8 @@ static inline void dump_rxd(union fm10k_rx_desc *rxd)
 static inline void
 rx_desc_to_ol_flags(struct rte_mbuf *m, const union fm10k_rx_desc *d)
 {
-	static const uint32_t
-		ptype_table[FM10K_RXD_PKTTYPE_MASK >> FM10K_RXD_PKTTYPE_SHIFT]
-			__rte_cache_aligned = {
+	static const alignas(RTE_CACHE_LINE_SIZE) uint32_t
+		ptype_table[FM10K_RXD_PKTTYPE_MASK >> FM10K_RXD_PKTTYPE_SHIFT] = {
 		[FM10K_PKTTYPE_OTHER] = RTE_PTYPE_L2_ETHER,
 		[FM10K_PKTTYPE_IPV4] = RTE_PTYPE_L2_ETHER | RTE_PTYPE_L3_IPV4,
 		[FM10K_PKTTYPE_IPV4_EX] = RTE_PTYPE_L2_ETHER |
@@ -78,21 +76,21 @@ rx_desc_to_ol_flags(struct rte_mbuf *m, const union fm10k_rx_desc *d)
 						>> FM10K_RXD_PKTTYPE_SHIFT];
 
 	if (d->w.pkt_info & FM10K_RXD_RSSTYPE_MASK)
-		m->ol_flags |= PKT_RX_RSS_HASH;
+		m->ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 
 	if (unlikely((d->d.staterr &
 		(FM10K_RXD_STATUS_IPCS | FM10K_RXD_STATUS_IPE)) ==
 		(FM10K_RXD_STATUS_IPCS | FM10K_RXD_STATUS_IPE)))
-		m->ol_flags |= PKT_RX_IP_CKSUM_BAD;
+		m->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 	else
-		m->ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+		m->ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 
 	if (unlikely((d->d.staterr &
 		(FM10K_RXD_STATUS_L4CS | FM10K_RXD_STATUS_L4E)) ==
 		(FM10K_RXD_STATUS_L4CS | FM10K_RXD_STATUS_L4E)))
-		m->ol_flags |= PKT_RX_L4_CKSUM_BAD;
+		m->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 	else
-		m->ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+		m->ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 }
 
 uint16_t
@@ -115,7 +113,7 @@ fm10k_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			break;
 		mbuf = q->sw_ring[next_dd];
 		desc = q->hw_ring[next_dd];
-#ifdef RTE_LIBRTE_FM10K_DEBUG_RX
+#ifdef RTE_ETHDEV_DEBUG_RX
 		dump_rxd(&desc);
 #endif
 		rte_pktmbuf_pkt_len(mbuf) = desc.w.length;
@@ -131,10 +129,10 @@ fm10k_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * Packets in fm10k device always carry at least one VLAN tag.
 		 * For those packets coming in without VLAN tag,
 		 * the port default VLAN tag will be used.
-		 * So, always PKT_RX_VLAN flag is set and vlan_tci
+		 * So, always RTE_MBUF_F_RX_VLAN flag is set and vlan_tci
 		 * is valid for each RX packet's mbuf.
 		 */
-		mbuf->ol_flags |= PKT_RX_VLAN;
+		mbuf->ol_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
 		mbuf->vlan_tci = desc.w.vlan;
 		/**
 		 * mbuf->vlan_tci_outer is an idle field in fm10k driver,
@@ -229,7 +227,7 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			break;
 		mbuf = q->sw_ring[next_dd];
 		desc = q->hw_ring[next_dd];
-#ifdef RTE_LIBRTE_FM10K_DEBUG_RX
+#ifdef RTE_ETHDEV_DEBUG_RX
 		dump_rxd(&desc);
 #endif
 
@@ -292,10 +290,10 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * Packets in fm10k device always carry at least one VLAN tag.
 		 * For those packets coming in without VLAN tag,
 		 * the port default VLAN tag will be used.
-		 * So, always PKT_RX_VLAN flag is set and vlan_tci
+		 * So, always RTE_MBUF_F_RX_VLAN flag is set and vlan_tci
 		 * is valid for each RX packet's mbuf.
 		 */
-		first_seg->ol_flags |= PKT_RX_VLAN;
+		first_seg->ol_flags |= RTE_MBUF_F_RX_VLAN | RTE_MBUF_F_RX_VLAN_STRIPPED;
 		first_seg->vlan_tci = desc.w.vlan;
 		/**
 		 * mbuf->vlan_tci_outer is an idle field in fm10k driver,
@@ -366,29 +364,31 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return nb_rcv;
 }
 
-int
-fm10k_dev_rx_descriptor_done(void *rx_queue, uint16_t offset)
+uint32_t
+fm10k_dev_rx_queue_count(void *rx_queue)
 {
+#define FM10K_RXQ_SCAN_INTERVAL 4
 	volatile union fm10k_rx_desc *rxdp;
-	struct fm10k_rx_queue *rxq = rx_queue;
-	uint16_t desc;
-	int ret;
+	struct fm10k_rx_queue *rxq;
+	uint16_t desc = 0;
 
-	if (unlikely(offset >= rxq->nb_desc)) {
-		PMD_DRV_LOG(ERR, "Invalid RX descriptor offset %u", offset);
-		return 0;
+	rxq = rx_queue;
+	rxdp = &rxq->hw_ring[rxq->next_dd];
+	while ((desc < rxq->nb_desc) &&
+		rxdp->w.status & rte_cpu_to_le_16(FM10K_RXD_STATUS_DD)) {
+		/**
+		 * Check the DD bit of a rx descriptor of each group of 4 desc,
+		 * to avoid checking too frequently and downgrading performance
+		 * too much.
+		 */
+		desc += FM10K_RXQ_SCAN_INTERVAL;
+		rxdp += FM10K_RXQ_SCAN_INTERVAL;
+		if (rxq->next_dd + desc >= rxq->nb_desc)
+			rxdp = &rxq->hw_ring[rxq->next_dd + desc -
+				rxq->nb_desc];
 	}
 
-	desc = rxq->next_dd + offset;
-	if (desc >= rxq->nb_desc)
-		desc -= rxq->nb_desc;
-
-	rxdp = &rxq->hw_ring[desc];
-
-	ret = !!(rxdp->w.status &
-			rte_cpu_to_le_16(FM10K_RXD_STATUS_DD));
-
-	return ret;
+	return desc;
 }
 
 int
@@ -578,12 +578,14 @@ static inline void tx_xmit_pkt(struct fm10k_tx_queue *q, struct rte_mbuf *mb)
 	/* set checksum flags on first descriptor of packet. SCTP checksum
 	 * offload is not supported, but we do not explicitly check for this
 	 * case in favor of greatly simplified processing. */
-	if (mb->ol_flags & (PKT_TX_IP_CKSUM | PKT_TX_L4_MASK | PKT_TX_TCP_SEG))
+	if (mb->ol_flags & (RTE_MBUF_F_TX_IP_CKSUM | RTE_MBUF_F_TX_L4_MASK | RTE_MBUF_F_TX_TCP_SEG))
 		q->hw_ring[q->next_free].flags |= FM10K_TXD_FLAG_CSUM;
 
 	/* set vlan if requested */
-	if (mb->ol_flags & PKT_TX_VLAN_PKT)
+	if (mb->ol_flags & RTE_MBUF_F_TX_VLAN)
 		q->hw_ring[q->next_free].vlan = mb->vlan_tci;
+	else
+		q->hw_ring[q->next_free].vlan = 0;
 
 	q->sw_ring[q->next_free] = mb;
 	q->hw_ring[q->next_free].buffer_addr =
@@ -591,9 +593,10 @@ static inline void tx_xmit_pkt(struct fm10k_tx_queue *q, struct rte_mbuf *mb)
 	q->hw_ring[q->next_free].buflen =
 			rte_cpu_to_le_16(rte_pktmbuf_data_len(mb));
 
-	if (mb->ol_flags & PKT_TX_TCP_SEG) {
-		hdrlen = mb->outer_l2_len + mb->outer_l3_len + mb->l2_len +
-			mb->l3_len + mb->l4_len;
+	if (mb->ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
+		hdrlen = mb->l2_len + mb->l3_len + mb->l4_len;
+		hdrlen += (mb->ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ?
+			  mb->outer_l2_len + mb->outer_l3_len : 0;
 		if (q->hw_ring[q->next_free].flags & FM10K_TXD_FLAG_FTAG)
 			hdrlen += sizeof(struct fm10k_ftag);
 
@@ -669,27 +672,27 @@ fm10k_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
 	for (i = 0; i < nb_pkts; i++) {
 		m = tx_pkts[i];
 
-		if ((m->ol_flags & PKT_TX_TCP_SEG) &&
+		if ((m->ol_flags & RTE_MBUF_F_TX_TCP_SEG) &&
 				(m->tso_segsz < FM10K_TSO_MINMSS)) {
-			rte_errno = -EINVAL;
+			rte_errno = EINVAL;
 			return i;
 		}
 
 		if (m->ol_flags & FM10K_TX_OFFLOAD_NOTSUP_MASK) {
-			rte_errno = -ENOTSUP;
+			rte_errno = ENOTSUP;
 			return i;
 		}
 
-#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+#ifdef RTE_ETHDEV_DEBUG_TX
 		ret = rte_validate_tx_offload(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 #endif
 		ret = rte_net_intel_cksum_prepare(m);
 		if (ret != 0) {
-			rte_errno = ret;
+			rte_errno = -ret;
 			return i;
 		}
 	}

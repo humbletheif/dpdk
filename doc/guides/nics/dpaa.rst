@@ -1,11 +1,11 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright 2017 NXP
+    Copyright 2017,2020-2024 NXP
 
 
 DPAA Poll Mode Driver
 =====================
 
-The DPAA NIC PMD (**librte_pmd_dpaa**) provides poll mode driver
+The DPAA NIC PMD (**librte_net_dpaa**) provides poll mode driver
 support for the inbuilt NIC found in the **NXP DPAA** SoC family.
 
 More information can be found at `NXP Official Website
@@ -21,6 +21,7 @@ Contents summary
 
 - DPAA overview
 - DPAA driver architecture overview
+- FMAN configuration tools and library
 
 .. _dpaa_overview:
 
@@ -135,6 +136,8 @@ RTE framework and DPAA internal components/drivers.
   The Ethernet driver is bound to a FMAN port and implements the interfaces
   needed to connect the DPAA network interface to the network stack.
   Each FMAN Port corresponds to a DPDK network interface.
+- PMD also support OH/ONIC mode, where the port works as a HW assisted virtual port
+  without actually connecting to a Physical MAC.
 
 
 Features
@@ -147,6 +150,10 @@ Features
   - Packet type information
   - Checksum offload
   - Promiscuous mode
+  - IEEE1588 PTP
+  - OH Port for inter application communication
+  - ONIC virtual port support
+
 
 DPAA Mempool Driver
 ~~~~~~~~~~~~~~~~~~~
@@ -162,10 +169,10 @@ Manager.
   this pool.
 
 
-Whitelisting & Blacklisting
----------------------------
+Allowing & Blocking
+-------------------
 
-For blacklisting a DPAA device, following commands can be used.
+For blocking a DPAA device, following commands can be used.
 
  .. code-block:: console
 
@@ -186,48 +193,18 @@ See :doc:`../platform/dpaa` for setup information
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>`
   to setup the basic DPDK environment.
+- DPAA driver has dependency on kernel to perform various functionalities.
+  So kernel and DPDK version should be compatible for proper working.
+  Refer release notes of NXP SDK guide to match the versions `NXP LSDK GUIDE
+  <https://www.nxp.com/design/software/embedded-software/linux-software-and-development-tools/layerscape-software-development-kit-v21-08:LAYERSCAPE-SDK>`_.
 
 .. note::
 
    Some part of dpaa bus code (qbman and fman - library) routines are
    dual licensed (BSD & GPLv2), however they are used as BSD in DPDK in userspace.
 
-Pre-Installation Configuration
-------------------------------
-
-Config File Options
-~~~~~~~~~~~~~~~~~~~
-
-The following options can be modified in the ``config`` file.
-Please note that enabling debugging options may affect system performance.
-
-- ``CONFIG_RTE_LIBRTE_DPAA_BUS`` (default ``n``)
-
-  By default it is enabled only for defconfig_arm64-dpaa-* config.
-  Toggle compilation of the ``librte_bus_dpaa`` driver.
-
-- ``CONFIG_RTE_LIBRTE_DPAA_PMD`` (default ``n``)
-
-  By default it is enabled only for defconfig_arm64-dpaa-* config.
-  Toggle compilation of the ``librte_pmd_dpaa`` driver.
-
-- ``CONFIG_RTE_LIBRTE_DPAA_DEBUG_DRIVER`` (default ``n``)
-
-  Toggles display of bus configurations and enables a debugging queue
-  to fetch error (Rx/Tx) packets to driver. By default, packets with errors
-  (like wrong checksum) are dropped by the hardware.
-
-- ``CONFIG_RTE_LIBRTE_DPAA_HWDEBUG`` (default ``n``)
-
-  Enables debugging of the Queue and Buffer Manager layer which interacts
-  with the DPAA hardware.
-
-- ``CONFIG_RTE_MBUF_DEFAULT_MEMPOOL_OPS`` (default ``dpaa``)
-
-  This is not a DPAA specific configuration - it is a generic RTE config.
-  For optimal performance and hardware utilization, it is expected that DPAA
-  Mempool driver is used for mempools. For that, this configuration needs to
-  enabled.
+Configuration
+-------------
 
 Environment Variables
 ~~~~~~~~~~~~~~~~~~~~~
@@ -251,8 +228,14 @@ state during application initialization:
   automatically be assigned from the these high perf PUSH queues. Any queue
   configuration beyond that will be standard Rx queues. The application can
   choose to change their number if HW portals are limited.
-  The valid values are from '0' to '4'. The valuse shall be set to '0' if the
+  The valid values are from '0' to '4'. The values shall be set to '0' if the
   application want to use eventdev with DPAA device.
+  Currently these queues are not used for LS1023/LS1043 platform by default.
+
+- ``DPAA_DISPLAY_FRAME_AND_PARSER_RESULT`` (default 0)
+
+  This defines the debug flag, whether to dump the detailed frame
+  and packet parsing result for the incoming packets.
 
 
 Driver compilation and testing
@@ -271,7 +254,7 @@ for details.
 
    .. code-block:: console
 
-      ./arm64-dpaa-linuxapp-gcc/testpmd -c 0xff -n 1 \
+      ./<build_dir>/app/dpdk-testpmd -c 0xff -n 1 \
         -- -i --portmask=0x3 --nb-cores=1 --no-flush-rx
 
       .....
@@ -292,6 +275,124 @@ for details.
       Done
       testpmd>
 
+* Use dev arg option ``drv_ieee1588=1`` to enable IEEE 1588 support
+  at driver level, e.g. ``dpaa:fm1-mac3,drv_ieee1588=1``.
+
+FMAN Config
+-----------
+
+Frame Manager is also responsible for parser, classify and distribute
+functionality in the DPAA.
+
+   FMAN supports:
+   Packet parsing at wire speed. It supports standard protocols parsing and
+   identification by HW (VLAN/IP/UDP/TCP/SCTP/PPPoE/PPP/MPLS/GRE/IPSec).
+   It supports non-standard UDF header parsing for custom protocols.
+   Classification / Distribution: Coarse classification based on Key generation
+   Hash and exact match lookup
+
+FMC - FMAN Configuration Tool
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   This tool is available in User Space. The tool is used to configure FMAN
+   Physical (MAC) or Ephemeral (OH)ports for Parse/Classify/distribute.
+   The PCDs can be hash based where a set of fields are key input for hash
+   generation within FMAN keygen. The hash value is used to generate a FQID for
+   frame. There is a provision to setup exact match lookup too where field
+   values within a packet drives corresponding FQID.
+   Currently it works on XML file inputs.
+
+   Limitations:
+   1.For Dynamic Configuration change, currently no support is available.
+   E.g. enable/disable a port, a operator (set of VLANs and associate rules).
+
+   2.During FMC configuration, port for which policy is being configured is
+   brought down and the policy is flushed on port before new policy is updated
+   for the port. Support is required to add/append/delete etc.
+
+   3.FMC, being a separate user-space application, needs to be invoked from
+   Shell.
+
+
+   The details can be found in FMC Doc at:
+   `Frame Manager Configuration Tool <https://www.nxp.com/docs/en/application-note/AN4760.pdf>`_.
+
+FMLIB
+~~~~~
+   The Frame Manager library provides an API on top of the Frame Manager driver
+   ioctl calls, that provides a user space application with a simple way to
+   configure driver parameters and PCD (parse - classify - distribute) rules.
+
+   This is an alternate to the FMC based configuration. This library provides
+   direct ioctl based interfaces for FMAN configuration as used by the FMC tool
+   as well. This helps in overcoming the main limitation of FMC - i.e. lack
+   of dynamic configuration.
+
+   The location for the fmd driver as used by FMLIB and FMC is as follows:
+   `Kernel FMD Driver
+   <https://source.codeaurora.org/external/qoriq/qoriq-components/linux/tree/drivers/net/ethernet/freescale/sdk_fman?h=linux-4.19-rt>`_.
+
+OH Port
+~~~~~~~
+   Offline(O/H) port is a type of hardware port
+   which is able to dequeue and enqueue from/to a QMan queue.
+   The FMan applies a Parse Classify Distribute (PCD) flow
+   and (if configured to do so) enqueues the frame back in a QMan queue.
+
+   The FMan is able to copy the frame into new buffers and enqueue back to the QMan.
+   This means these ports can be used to send and receive packets
+   between two applications as well.
+
+   An O/H port have two queues.
+   One to receive and one to send the packets.
+   It will loopback all the packets on Tx queue which are received on Rx queue.
+
+
+		--------      Tx Packets      ---------
+		| App  | - -  - - - - - - - > | O/H   |
+		|      | < - - - - - - - - -  | Port  |
+		--------      Rx Packets      ---------
+
+
+ONIC
+~~~~
+   To use OH port to communicate between two applications,
+   we can assign Rx port of an O/H port to Application 1
+   and Tx port to Application 2
+   so that Application 1 can send packets to Application 2.
+   Similarly, we can assign Tx port of another O/H port to Application 1
+   and Rx port to Application 2
+   so that Application 2 can send packets to Application 1.
+
+   ONIC is logically defined to achieve it.
+   Internally it will use one Rx queue of an O/H port
+   and one Tx queue of another O/H port.
+   For application, it will behave as single O/H port.
+
+   +------+         +------+        +------+        +------+        +------+
+   |      |   Tx    |      |   Rx   | O/H  |   Tx   |      |   Rx   |      |
+   |      | - - - > |      | -  - > | Port | -  - > |      | -  - > |      |
+   |      |         |      |        |  1   |        |      |        |      |
+   |      |         |      |        +------+        |      |        |      |
+   | App  |         | ONIC |                        | ONIC |        | App  |
+   |  1   |         | Port |                        | Port |        |  2   |
+   |      |         |  1   |        +------+        |  2   |        |      |
+   |      |   Rx    |      |   Tx   | O/H  |   Rx   |      |   Tx   |      |
+   |      | < - - - |      | < - - -| Port | < - - -|      | < - - -|      |
+   |      |         |      |        |  2   |        |      |        |      |
+   +------+         +------+        +------+        +------+        +------+
+
+   All the packets received by ONIC port 1 will be send to ONIC port 2 and vice versa.
+   These ports can be used by DPDK applications just like physical ports.
+
+
+VSP (Virtual Storage Profile)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+   The storage profiled are means to provide virtualized interface. A ranges of
+   storage profiles cab be associated to Ethernet ports.
+   They are selected during classification. Specify how the frame should be
+   written to memory and which buffer pool to select for packet storage in
+   queues. Start and End margin of buffer can also be configured.
+
 Limitations
 -----------
 
@@ -305,7 +406,7 @@ Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
 The DPAA SoC family support a maximum of a 10240 jumbo frame. The value
-is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
+is fixed and cannot be changed. So, even when the ``rxmode.mtu``
 member of ``struct rte_eth_conf`` is set to a value lower than 10240, frames
 up to 10240 bytes can still reach the host interface.
 

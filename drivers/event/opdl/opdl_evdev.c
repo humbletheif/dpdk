@@ -3,9 +3,10 @@
  */
 
 #include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_lcore.h>
 #include <rte_memzone.h>
 #include <rte_kvargs.h>
@@ -98,43 +99,43 @@ opdl_port_link(struct rte_eventdev *dev,
 
 	if (unlikely(dev->data->dev_started)) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "Attempt to link queue (%u) to port %d while device started\n",
+			     "Attempt to link queue (%u) to port %d while device started",
 			     dev->data->dev_id,
 				queues[0],
 				p->id);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
 	/* Max of 1 queue per port */
 	if (num > 1) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "Attempt to link more than one queue (%u) to port %d requested\n",
+			     "Attempt to link more than one queue (%u) to port %d requested",
 			     dev->data->dev_id,
 				num,
 				p->id);
-		rte_errno = -EDQUOT;
+		rte_errno = EDQUOT;
 		return 0;
 	}
 
 	if (!p->configured) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "port %d not configured, cannot link to %u\n",
+			     "port %d not configured, cannot link to %u",
 			     dev->data->dev_id,
 				p->id,
 				queues[0]);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
 	if (p->external_qid != OPDL_INVALID_QID) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "port %d already linked to queue %u, cannot link to %u\n",
+			     "port %d already linked to queue %u, cannot link to %u",
 			     dev->data->dev_id,
 				p->id,
 				p->external_qid,
 				queues[0]);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 
@@ -156,11 +157,11 @@ opdl_port_unlink(struct rte_eventdev *dev,
 
 	if (unlikely(dev->data->dev_started)) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "Attempt to unlink queue (%u) to port %d while device started\n",
+			     "Attempt to unlink queue (%u) to port %d while device started",
 			     dev->data->dev_id,
 			     queues[0],
 			     p->id);
-		rte_errno = -EINVAL;
+		rte_errno = EINVAL;
 		return 0;
 	}
 	RTE_SET_USED(nb_unlinks);
@@ -187,7 +188,7 @@ opdl_port_setup(struct rte_eventdev *dev,
 	/* Check if port already configured */
 	if (p->configured) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "Attempt to setup port %d which is already setup\n",
+			     "Attempt to setup port %d which is already setup",
 			     dev->data->dev_id,
 			     p->id);
 		return -EDQUOT;
@@ -243,7 +244,7 @@ opdl_queue_setup(struct rte_eventdev *dev,
 	/* Extra sanity check, probably not needed */
 	if (queue_id == OPDL_INVALID_QID) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "Invalid queue id %u requested\n",
+			     "Invalid queue id %u requested",
 			     dev->data->dev_id,
 			     queue_id);
 		return -EINVAL;
@@ -251,7 +252,7 @@ opdl_queue_setup(struct rte_eventdev *dev,
 
 	if (device->nb_q_md > device->max_queue_nb) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "Max number of queues %u exceeded by request %u\n",
+			     "Max number of queues %u exceeded by request %u",
 			     dev->data->dev_id,
 			     device->max_queue_nb,
 			     device->nb_q_md);
@@ -261,7 +262,7 @@ opdl_queue_setup(struct rte_eventdev *dev,
 	if (RTE_EVENT_QUEUE_CFG_ALL_TYPES
 	    & conf->event_queue_cfg) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "QUEUE_CFG_ALL_TYPES not supported\n",
+			     "QUEUE_CFG_ALL_TYPES not supported",
 			     dev->data->dev_id);
 		return -ENOTSUP;
 	} else if (RTE_EVENT_QUEUE_CFG_SINGLE_LINK
@@ -280,7 +281,7 @@ opdl_queue_setup(struct rte_eventdev *dev,
 			break;
 		default:
 			PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-				     "Unknown queue type %d requested\n",
+				     "Unknown queue type %d requested",
 				     dev->data->dev_id,
 				     conf->event_queue_cfg);
 			return -EINVAL;
@@ -291,7 +292,7 @@ opdl_queue_setup(struct rte_eventdev *dev,
 	for (i = 0; i < device->nb_q_md; i++) {
 		if (device->q_md[i].ext_id == queue_id) {
 			PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-				     "queue id %u already setup\n",
+				     "queue id %u already setup",
 				     dev->data->dev_id,
 				     queue_id);
 			return -EINVAL;
@@ -351,7 +352,7 @@ opdl_dev_configure(const struct rte_eventdev *dev)
 
 	if (conf->event_dev_cfg & RTE_EVENT_DEV_CFG_PER_DEQUEUE_TIMEOUT) {
 		PMD_DRV_LOG(ERR, "DEV_ID:[%02d] : "
-			     "DEQUEUE_TIMEOUT not supported\n",
+			     "DEQUEUE_TIMEOUT not supported",
 			     dev->data->dev_id);
 		return -ENOTSUP;
 	}
@@ -374,7 +375,13 @@ opdl_info_get(struct rte_eventdev *dev, struct rte_event_dev_info *info)
 		.max_event_port_dequeue_depth = MAX_OPDL_CONS_Q_DEPTH,
 		.max_event_port_enqueue_depth = MAX_OPDL_CONS_Q_DEPTH,
 		.max_num_events = OPDL_INFLIGHT_EVENTS_TOTAL,
-		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE,
+		.event_dev_cap = RTE_EVENT_DEV_CAP_BURST_MODE |
+				 RTE_EVENT_DEV_CAP_ORDERED |
+				 RTE_EVENT_DEV_CAP_ATOMIC |
+				 RTE_EVENT_DEV_CAP_PARALLEL |
+				 RTE_EVENT_DEV_CAP_CARRY_FLOW_ID |
+				 RTE_EVENT_DEV_CAP_MAINTENANCE_FREE,
+		.max_profiles_per_port = 1,
 	};
 
 	*info = evdev_opdl_info;
@@ -422,16 +429,17 @@ opdl_dump(struct rte_eventdev *dev, FILE *f)
 			else
 				p_type = "????";
 
-			sprintf(queue_id, "%02u", port->external_qid);
+			snprintf(queue_id, sizeof(queue_id), "%02u",
+					port->external_qid);
 			if (port->p_type == OPDL_REGULAR_PORT ||
 					port->p_type == OPDL_ASYNC_PORT)
-				sprintf(total_cyc,
+				snprintf(total_cyc, sizeof(total_cyc),
 					" %'16"PRIu64"",
 					(cpg != 0 ?
 					 port->port_stat[total_cycles] / cpg
 					 : 0));
 			else
-				sprintf(total_cyc,
+				snprintf(total_cyc, sizeof(total_cyc),
 					"             ----");
 			fprintf(f,
 				"%4s %10u %8u %9s %'16"PRIu64" %'16"PRIu64" %s "
@@ -607,7 +615,7 @@ set_do_test(const char *key __rte_unused, const char *value, void *opaque)
 static int
 opdl_probe(struct rte_vdev_device *vdev)
 {
-	static struct rte_eventdev_ops evdev_opdl_ops = {
+	static struct eventdev_ops evdev_opdl_ops = {
 		.dev_configure = opdl_dev_configure,
 		.dev_infos_get = opdl_info_get,
 		.dev_close = opdl_close,
@@ -654,7 +662,7 @@ opdl_probe(struct rte_vdev_device *vdev)
 
 		if (!kvlist) {
 			PMD_DRV_LOG(INFO,
-					"Ignoring unsupported parameters when creating device '%s'\n",
+					"Ignoring unsupported parameters when creating device '%s'",
 					name);
 		} else {
 			int ret = rte_kvargs_process(kvlist, NUMA_NODE_ARG,
@@ -692,7 +700,7 @@ opdl_probe(struct rte_vdev_device *vdev)
 		}
 	}
 	dev = rte_event_pmd_vdev_init(name,
-			sizeof(struct opdl_evdev), socket_id);
+			sizeof(struct opdl_evdev), socket_id, vdev);
 
 	if (dev == NULL) {
 		PMD_DRV_LOG(ERR, "eventdev vdev init() failed");
@@ -700,8 +708,8 @@ opdl_probe(struct rte_vdev_device *vdev)
 	}
 
 	PMD_DRV_LOG(INFO, "DEV_ID:[%02d] : "
-		      "Success - creating eventdev device %s, numa_node:[%d], do_valdation:[%s]"
-			  " , self_test:[%s]\n",
+		      "Success - creating eventdev device %s, numa_node:[%d], do_validation:[%s]"
+			  " , self_test:[%s]",
 		      dev->data->dev_id,
 		      name,
 		      socket_id,
@@ -710,15 +718,13 @@ opdl_probe(struct rte_vdev_device *vdev)
 
 	dev->dev_ops = &evdev_opdl_ops;
 
-	dev->enqueue = opdl_event_enqueue;
 	dev->enqueue_burst = opdl_event_enqueue_burst;
 	dev->enqueue_new_burst = opdl_event_enqueue_burst;
 	dev->enqueue_forward_burst = opdl_event_enqueue_burst;
-	dev->dequeue = opdl_event_dequeue;
 	dev->dequeue_burst = opdl_event_dequeue_burst;
 
 	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return 0;
+		goto done;
 
 	opdl = dev->data->dev_private;
 	opdl->data = dev->data;
@@ -731,6 +737,8 @@ opdl_probe(struct rte_vdev_device *vdev)
 	if (do_test == 1)
 		test_result =  opdl_selftest();
 
+done:
+	event_dev_probing_finish(dev);
 	return test_result;
 }
 
@@ -743,7 +751,7 @@ opdl_remove(struct rte_vdev_device *vdev)
 	if (name == NULL)
 		return -EINVAL;
 
-	PMD_DRV_LOG(INFO, "Closing eventdev opdl device %s\n", name);
+	PMD_DRV_LOG(INFO, "Closing eventdev opdl device %s", name);
 
 	return rte_event_pmd_vdev_uninit(name);
 }
@@ -753,13 +761,7 @@ static struct rte_vdev_driver evdev_opdl_pmd_drv = {
 	.remove = opdl_remove
 };
 
-RTE_INIT(opdl_init_log)
-{
-	opdl_logtype_driver = rte_log_register("pmd.event.opdl.driver");
-	if (opdl_logtype_driver >= 0)
-		rte_log_set_level(opdl_logtype_driver, RTE_LOG_INFO);
-}
-
+RTE_LOG_REGISTER_SUFFIX(opdl_logtype_driver, driver, INFO);
 
 RTE_PMD_REGISTER_VDEV(EVENTDEV_NAME_OPDL_PMD, evdev_opdl_pmd_drv);
 RTE_PMD_REGISTER_PARAM_STRING(event_opdl, NUMA_NODE_ARG "=<int>"

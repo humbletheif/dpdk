@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2018
+ * Copyright(c) 2001-2020 Intel Corporation
  */
 
 
@@ -263,18 +263,18 @@ void ixgbe_dcb_unpack_map_cee(struct ixgbe_dcb_config *cfg, int direction,
 }
 
 /**
- * ixgbe_dcb_config - Struct containing DCB settings.
+ * ixgbe_dcb_check_config_cee - Struct containing DCB settings.
  * @dcb_config: Pointer to DCB config structure
  *
  * This function checks DCB rules for DCB settings.
  * The following rules are checked:
  * 1. The sum of bandwidth percentages of all Bandwidth Groups must total 100%.
  * 2. The sum of bandwidth percentages of all Traffic Classes within a Bandwidth
- *    Group must total 100.
+ *   Group must total 100.
  * 3. A Traffic Class should not be set to both Link Strict Priority
- *    and Group Strict Priority.
+ *   and Group Strict Priority.
  * 4. Link strict Bandwidth Groups can only have link strict traffic classes
- *    with zero bandwidth.
+ *   with zero bandwidth.
  */
 s32 ixgbe_dcb_check_config_cee(struct ixgbe_dcb_config *dcb_config)
 {

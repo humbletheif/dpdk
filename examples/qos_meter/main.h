@@ -6,23 +6,25 @@
 #define _MAIN_H_
 
 enum policer_action {
-        GREEN = e_RTE_METER_GREEN,
-        YELLOW = e_RTE_METER_YELLOW,
-        RED = e_RTE_METER_RED,
-        DROP = 3,
+		GREEN = RTE_COLOR_GREEN,
+		YELLOW = RTE_COLOR_YELLOW,
+		RED = RTE_COLOR_RED,
+		DROP = 3,
 };
 
-enum policer_action policer_table[e_RTE_METER_COLORS][e_RTE_METER_COLORS] =
+/* Policy implemented as a static structure. 8< */
+enum policer_action policer_table[RTE_COLORS][RTE_COLORS] =
 {
 	{ GREEN, RED, RED},
 	{ DROP, YELLOW, RED},
 	{ DROP, DROP, RED}
 };
+/* >8 End of policy implemented as a static structure. */
 
 #if APP_MODE == APP_MODE_FWD
 
 #define FUNC_METER(m, p, time, pkt_len, pkt_color)	\
-({							\
+__extension__ ({					\
 	void *mp = m;					\
 	void *pp = p;					\
 	mp = mp;					\

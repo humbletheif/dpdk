@@ -1,52 +1,19 @@
-..  BSD LICENSE
+..  SPDX-License-Identifier: BSD-3-Clause
     Copyright(c) 2017 Marvell International Ltd.
     Copyright(c) 2017 Semihalf.
-    All rights reserved.
-
-    Redistribution and use in source and binary forms, with or without
-    modification, are permitted provided that the following conditions
-    are met:
-
-      * Redistributions of source code must retain the above copyright
-        notice, this list of conditions and the following disclaimer.
-      * Redistributions in binary form must reproduce the above copyright
-        notice, this list of conditions and the following disclaimer in
-        the documentation and/or other materials provided with the
-        distribution.
-      * Neither the name of the copyright holder nor the names of its
-        contributors may be used to endorse or promote products derived
-        from this software without specific prior written permission.
-
-    THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-    "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-    LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-    A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-    OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-    SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-    LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-    DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-    THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-    (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-    OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 .. _mvpp2_poll_mode_driver:
 
 MVPP2 Poll Mode Driver
 ======================
 
-The MVPP2 PMD (librte_pmd_mvpp2) provides poll mode driver support
+The MVPP2 PMD (**librte_net_mvpp2**) provides poll mode driver support
 for the Marvell PPv2 (Packet Processor v2) 1/10 Gbps adapter.
 
 Detailed information about SoCs that use PPv2 can be obtained here:
 
 * https://www.marvell.com/embedded-processors/armada-70xx/
 * https://www.marvell.com/embedded-processors/armada-80xx/
-
-.. Note::
-
-   Due to external dependencies, this driver is disabled by default. It must
-   be enabled manually by setting relevant configuration option manually.
-   Please refer to `Config File Options`_ section for further details.
 
 
 Features
@@ -73,7 +40,7 @@ Features of the MVPP2 PMD are:
 - :ref:`Extended stats <extstats>`
 - RX flow control
 - Scattered TX frames
-- :ref:`QoS <qossupport>`
+- :ref:`QoS <extconf>`
 - :ref:`Flow API <flowapi>`
 - :ref:`Traffic metering and policing <mtrapi>`
 - :ref:`Traffic Management API <tmapi>`
@@ -91,7 +58,7 @@ Limitations
   chance to start in a sane state.
 
 - MUSDK architecture does not support changing configuration in run time.
-  All nessesary configurations should be done before first dev_start().
+  All necessary configurations should be done before first dev_start().
 
 - RX queue start/stop is not supported.
 
@@ -124,7 +91,7 @@ Prerequisites
 
   .. code-block:: console
 
-     git clone https://github.com/MarvellEmbeddedProcessors/musdk-marvell.git -b musdk-armada-18.09
+     git clone https://github.com/MarvellEmbeddedProcessors/musdk-marvell.git -b musdk-release-SDK-10.3.5.0-PR2
 
   MUSDK is a light-weight library that provides direct access to Marvell's
   PPv2 (Packet Processor v2). Alternatively prebuilt MUSDK library can be
@@ -141,22 +108,8 @@ Prerequisites
   DPDK environment.
 
 
-Config File Options
--------------------
-
-The following options can be modified in the ``config`` file.
-
-- ``CONFIG_RTE_LIBRTE_MVPP2_PMD`` (default ``n``)
-
-    Toggle compilation of the librte mvpp2 driver.
-
-    .. Note::
-
-       When MVPP2 PMD is enabled ``CONFIG_RTE_LIBRTE_MVNETA_PMD`` must be disabled
-
-
-Building DPDK
--------------
+Building MUSDK
+--------------
 
 Driver needs precompiled MUSDK library during compilation.
 
@@ -170,22 +123,19 @@ Driver needs precompiled MUSDK library during compilation.
 MUSDK will be installed to `usr/local` under current directory.
 For the detailed build instructions please consult ``doc/musdk_get_started.txt``.
 
-Before the DPDK build process the environmental variable ``LIBMUSDK_PATH`` with
-the path to the MUSDK installation directory needs to be exported.
 
-For additional instructions regarding DPDK cross compilation please refer to :doc:`Cross compile DPDK for ARM64 <../linux_gsg/cross_build_dpdk_for_arm64>`.
+Building DPDK
+-------------
+
+Add path to libmusdk.pc in PKG_CONFIG_PATH environment variable.
 
 .. code-block:: console
 
-   export LIBMUSDK_PATH=<musdk>/usr/local
-   export CROSS=<toolchain>/bin/aarch64-linux-gnu-
-   export RTE_KERNELDIR=<kernel-dir>
-   export RTE_TARGET=arm64-armv8a-linuxapp-gcc
+   export PKG_CONFIG_PATH=$<musdk_install_dir>/lib/pkgconfig/:$PKG_CONFIG_PATH
 
-   make config T=arm64-armv8a-linuxapp-gcc
-   sed -i "s/MVNETA_PMD=y/MVNETA_PMD=n/" build/.config
-   sed -i "s/MVPP2_PMD=n/MVPP2_PMD=y/" build/.config
-   make
+   meson setup build --cross-file config/arm/arm64_armada_linux_gcc
+   ninja -C build
+
 
 Usage Example
 -------------
@@ -212,7 +162,7 @@ In order to run testpmd example application following command can be used:
 
 .. code-block:: console
 
-   ./testpmd --vdev=eth_mvpp2,iface=eth0,iface=eth2 -c 7 -- \
+   ./dpdk-testpmd --vdev=eth_mvpp2,iface=eth0,iface=eth2 -c 7 -- \
      --burst=128 --txd=2048 --rxd=1024 --rxq=2 --txq=2  --nb-cores=2 \
      -i -a --rss-udp
 
@@ -238,12 +188,12 @@ MVPP2 PMD supports the following extended statistics:
 	- ``tx_errors``: number of TX MAC errors
 
 
-.. _qossupport:
+.. _extconf:
 
-QoS Configuration
------------------
+External Configuration
+----------------------
 
-QoS configuration is done through external configuration file. Path to the
+Several driver configuration (e.g. QoS) can be done through external configuration file. Path to the
 file must be given as `cfg` in driver's vdev parameter list.
 
 Configuration syntax
@@ -258,7 +208,17 @@ Configuration syntax
    ebs = <ebs>
    cbs = <cbs>
 
+   [parser udf <udf_id>]
+   proto = <proto>
+   field = <field>
+   key = <key>
+   mask = <mask>
+   offset = <offset>
+
    [port <portnum> default]
+   start_hdr = <start_hdr>
+   forward_bad_frames = <forward_bad_frames>
+   fill_bpool_buffs = <fill_bpool_buffs>
    default_tc = <default_tc>
    mapping_priority = <mapping_priority>
 
@@ -289,7 +249,25 @@ Configuration syntax
 
 Where:
 
+- ``<udf_id>``: Logical UDF id.
+
+- ``<proto>``: Indicate the preceding hdr before the UDF header (`eth` or `udp`).
+
+- ``<field>``: Indicate the field of the <proto> hdr (`type` (eth) or `dport` (udp).
+
+- ``<key>``: UDF key in string format starting with '0x'.
+
+- ``<mask>``: UDF mask in string format starting with '0x'.
+
+- ``<offset>``: Starting UDF offset from the <proto> hdr.
+
 - ``<portnum>``: DPDK Port number (0..n).
+
+- ``<start_hdr>``: Indicate what is the start header mode (`none` (eth), `dsa`, `ext_dsa` or `custom`).
+
+- ``<forward_bad_frames>``: Indicate whether to forward or drop l2 bad packets (0 or 1).
+
+- ``<fill_bpool_buffs>``: Control the amount of refill buffers (default is 64).
 
 - ``<default_tc>``: Default traffic class (e.g. 0)
 
@@ -395,12 +373,24 @@ Configuration file example
    rate_limit = 10000
    burst_size = 2000
 
+Configuration file example with UDF
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. code-block:: console
+
+   [parser udf 0]
+   proto = eth
+   field = type
+   key = 0x8842
+   mask = 0xffff
+   offset = 6
+
 Usage example
 ^^^^^^^^^^^^^
 
 .. code-block:: console
 
-   ./testpmd --vdev=eth_mvpp2,iface=eth0,iface=eth2,cfg=/home/user/mrvl.conf \
+   ./dpdk-testpmd --vdev=eth_mvpp2,iface=eth0,iface=eth2,cfg=/home/user/mrvl.conf \
      -c 7 -- -i -a --disable-hw-vlan-strip --rxq=3 --txq=3
 
 .. _flowapi:
@@ -410,7 +400,10 @@ Flow API
 
 PPv2 offers packet classification capabilities via classifier engine which
 can be configured via generic flow API offered by DPDK.
-For an additional description please refer to DPDK :ref:`Generic flow API <Generic_flow_API>`.
+
+The :ref:`flow_isolated_mode` is supported.
+
+For an additional description please refer to DPDK :doc:`../prog_guide/ethdev/flow_offload`.
 
 Supported flow actions
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -419,6 +412,7 @@ Following flow action items are supported by the driver:
 
 * DROP
 * QUEUE
+* METER
 
 Supported flow items
 ~~~~~~~~~~~~~~~~~~~~
@@ -510,7 +504,7 @@ Before proceeding run testpmd user application:
 
 .. code-block:: console
 
-   ./testpmd --vdev=eth_mvpp2,iface=eth0,iface=eth2 -c 3 -- -i --p 3 -a --disable-hw-vlan-strip
+   ./dpdk-testpmd --vdev=eth_mvpp2,iface=eth0,iface=eth2 -c 3 -- -i --p 3 -a --disable-hw-vlan-strip
 
 Example #1
 ^^^^^^^^^^
@@ -578,13 +572,15 @@ Traffic metering and policing
 
 MVPP2 PMD supports DPDK traffic metering and policing that allows the following:
 
-1. Meter ingress traffic.
-2. Do policing.
-3. Gather statistics.
+#. Meter ingress traffic.
 
-For an additional description please refer to DPDK :doc:`Traffic Metering and Policing API <../prog_guide/traffic_metering_and_policing>`.
+#. Do policing.
 
-The policer objects defined by this feature can work with the default policer defined via config file as described in :ref:`QoS Support <qossupport>`.
+#. Gather statistics.
+
+For an additional description please refer to DPDK :doc:`../prog_guide/ethdev/traffic_metering_and_policing`.
+
+The policer objects defined by this feature can work with the default policer defined via config file as described in :ref:`QoS Support <extconf>`.
 
 Limitations
 ~~~~~~~~~~~
@@ -598,25 +594,25 @@ The following capabilities are not supported:
 Usage example
 ~~~~~~~~~~~~~
 
-1. Run testpmd user app:
+#. Run testpmd user app:
 
    .. code-block:: console
 
-		./testpmd --vdev=eth_mvpp2,iface=eth0,iface=eth2 -c 6 -- -i -p 3 -a --txd 1024 --rxd 1024
+		./dpdk-testpmd --vdev=eth_mvpp2,iface=eth0,iface=eth2 -c 6 -- -i -p 3 -a --txd 1024 --rxd 1024
 
-2. Create meter profile:
+#. Create meter profile:
 
    .. code-block:: console
 
 		testpmd> add port meter profile 0 0 srtcm_rfc2697 2000 256 256
 
-3. Create meter:
+#. Create meter:
 
    .. code-block:: console
 
 		testpmd> create port meter 0 0 0 yes d d d 0 1 0
 
-4. Create flow rule witch meter attached:
+#. Create flow rule witch meter attached:
 
    .. code-block:: console
 
@@ -634,10 +630,13 @@ Traffic Management API
 MVPP2 PMD supports generic DPDK Traffic Management API which allows to
 configure the following features:
 
-1. Hierarchical scheduling
-2. Traffic shaping
-3. Congestion management
-4. Packet marking
+#. Hierarchical scheduling
+
+#. Traffic shaping
+
+#. Congestion management
+
+#. Packet marking
 
 Internally TM is represented by a hierarchy (tree) of nodes.
 Node which has a parent is called a leaf whereas node without
@@ -659,7 +658,7 @@ of configured tx queues.
 After hierarchy is complete it can be committed.
 
 
-For an additional description please refer to DPDK :doc:`Traffic Management API <../prog_guide/traffic_management>`.
+For an additional description please refer to DPDK :doc:`../prog_guide/ethdev/traffic_management`.
 
 Limitations
 ~~~~~~~~~~~
@@ -675,22 +674,22 @@ The following capabilities are not supported:
 Usage example
 ~~~~~~~~~~~~~
 
-For a detailed usage description please refer to "Traffic Management" section in DPDK :doc:`Testpmd Runtime Functions <../testpmd_app_ug/testpmd_funcs>`.
+For a detailed usage description please refer to "Traffic Management" section in DPDK :doc:`../testpmd_app_ug/testpmd_funcs`.
 
-1. Run testpmd as follows:
+#. Run testpmd as follows:
 
    .. code-block:: console
 
-		./testpmd --vdev=net_mrvl,iface=eth0,iface=eth2,cfg=./qos_config -c 7 -- \
+		./dpdk-testpmd --vdev=net_mrvl,iface=eth0,iface=eth2,cfg=./qos_config -c 7 -- \
 		-i -p 3 --disable-hw-vlan-strip --rxq 3 --txq 3 --txd 1024 --rxd 1024
 
-2. Stop all ports:
+#. Stop all ports:
 
    .. code-block:: console
 
 		testpmd> port stop all
 
-3. Add shaper profile:
+#. Add shaper profile:
 
    .. code-block:: console
 
@@ -704,7 +703,7 @@ For a detailed usage description please refer to "Traffic Management" section in
 		70000   - Bucket size in bytes.
 		0       - Packet length adjustment - ignored.
 
-4. Add non-leaf node for port 0:
+#. Add non-leaf node for port 0:
 
    .. code-block:: console
 
@@ -723,7 +722,7 @@ For a detailed usage description please refer to "Traffic Management" section in
 		 3  - Enable statistics for both number of transmitted packets and bytes.
 		 0  - Number of shared shapers.
 
-5. Add leaf node for tx queue 0:
+#. Add leaf node for tx queue 0:
 
    .. code-block:: console
 
@@ -743,7 +742,7 @@ For a detailed usage description please refer to "Traffic Management" section in
 		 1  - Enable statistics counter for number of transmitted packets.
 		 0  - Number of shared shapers.
 
-6. Add leaf node for tx queue 1:
+#. Add leaf node for tx queue 1:
 
    .. code-block:: console
 
@@ -763,7 +762,7 @@ For a detailed usage description please refer to "Traffic Management" section in
 		 1  - Enable statistics counter for number of transmitted packets.
 		 0  - Number of shared shapers.
 
-7. Add leaf node for tx queue 2:
+#. Add leaf node for tx queue 2:
 
    .. code-block:: console
 
@@ -783,18 +782,18 @@ For a detailed usage description please refer to "Traffic Management" section in
 		 1  - Enable statistics counter for number of transmitted packets.
 		 0  - Number of shared shapers.
 
-8. Commit hierarchy:
+#. Commit hierarchy:
 
    .. code-block:: console
 
 		testpmd> port tm hierarchy commit 0 no
 
-  Parameters have following meaning::
+   Parameters have following meaning::
 
 		0  - Id of a port.
 		no - Do not flush TM hierarchy if commit fails.
 
-9. Start all ports
+#. Start all ports
 
    .. code-block:: console
 
@@ -802,7 +801,7 @@ For a detailed usage description please refer to "Traffic Management" section in
 
 
 
-10. Enable forwarding
+#. Enable forwarding
 
    .. code-block:: console
 

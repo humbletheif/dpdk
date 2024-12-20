@@ -13,7 +13,7 @@ Overview
 The Command Line sample application is a simple application that
 demonstrates the use of the command line interface in the DPDK.
 This application is a readline-like interface that can be used
-to debug a DPDK application, in a Linux* application environment.
+to debug a DPDK application in a Linux* application environment.
 
 .. note::
 
@@ -22,10 +22,13 @@ to debug a DPDK application, in a Linux* application environment.
     See also the "rte_cmdline library should not be used in production code due to limited testing" item
     in the "Known Issues" section of the Release Notes.
 
-The Command Line sample application supports some of the features of the GNU readline library such as, completion,
-cut/paste and some other special bindings that make configuration and debug faster and easier.
+The Command Line sample application supports some of the features of the GNU readline library
+such as completion, cut/paste and other special bindings
+that make configuration and debug faster and easier.
 
-The application shows how the rte_cmdline application can be extended to handle a list of objects.
+The application shows how the ``cmdline`` library can be extended
+to handle a list of objects.
+
 There are three simple commands:
 
 *   add obj_name IP: Add a new object with an IP/IPv6 address associated to it.
@@ -48,11 +51,11 @@ The application is located in the ``cmd_line`` sub-directory.
 Running the Application
 -----------------------
 
-To run the application in linuxapp environment, issue the following command:
+To run the application in a Linux environment, issue the following command:
 
 .. code-block:: console
 
-    $ ./build/cmdline -l 0-3 -n 4
+    $ ./<build_dir>/examples/dpdk-cmdline -l 0-3 -n 4
 
 Refer to the *DPDK Getting Started Guide* for general information on running applications
 and the Environment Abstraction Layer (EAL) options.
@@ -60,7 +63,7 @@ and the Environment Abstraction Layer (EAL) options.
 Explanation
 -----------
 
-The following sections provide some explanation of the code.
+The following sections provide explanation of the code.
 
 EAL Initialization and cmdline Start
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -68,38 +71,32 @@ EAL Initialization and cmdline Start
 The first task is the initialization of the Environment Abstraction Layer (EAL).
 This is achieved as follows:
 
-.. code-block:: c
+.. literalinclude:: ../../../examples/cmdline/main.c
+    :language: c
+    :start-after: Initialization of the Environment Abstraction Layer (EAL). 8<
+    :end-before: >8 End of initialization of Environment Abstraction Layer (EAL).
 
-    int main(int argc, char **argv)
-    {
-        ret = rte_eal_init(argc, argv);
-        if (ret < 0)
-            rte_panic("Cannot init EAL\n");
+Then, a new command line object is created and starts to interact with the user through the console:
 
-Then, a new command line object is created and started to interact with the user through the console:
+.. literalinclude:: ../../../examples/cmdline/main.c
+    :language: c
+    :start-after: Creating a new command line object. 8<
+    :end-before: >8 End of creating a new command line object.
+    :dedent: 1
 
-.. code-block:: c
-
-    cl = cmdline_stdin_new(main_ctx, "example> ");
-    cmdline_interact(cl);
-    cmdline_stdin_exit(cl);
-
-The cmd line_interact() function returns when the user types **Ctrl-d** and in this case,
-the application exits.
+The ``cmdline_interact()`` function returns when the user types **Ctrl-d** and,
+in this case, the application exits.
 
 Defining a cmdline Context
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-A cmdline context is a list of commands that are listed in a NULL-terminated table, for example:
+A cmdline context is a list of commands that are listed in a NULL-terminated table.
+For example:
 
-.. code-block:: c
-
-    cmdline_parse_ctx_t main_ctx[] = {
-        (cmdline_parse_inst_t *) &cmd_obj_del_show,
-        (cmdline_parse_inst_t *) &cmd_obj_add,
-        (cmdline_parse_inst_t *) &cmd_help,
-         NULL,
-    };
+.. literalinclude:: ../../../examples/cmdline/commands.c
+    :language: c
+    :start-after: Cmdline context list of commands in NULL-terminated table. 8<
+    :end-before: >8 End of context list.
 
 Each command (of type cmdline_parse_inst_t) is defined statically.
 It contains a pointer to a callback function that is executed when the command is parsed,
@@ -120,33 +117,10 @@ in the parse_obj_list.c and parse_obj_list.h files.
 
 For example, the cmd_obj_del_show command is defined as shown below:
 
-.. code-block:: c
-
-    struct cmd_obj_add_result {
-        cmdline_fixed_string_t action;
-        cmdline_fixed_string_t name;
-        struct object *obj;
-    };
-
-    static void cmd_obj_del_show_parsed(void *parsed_result, struct cmdline *cl, attribute ((unused)) void *data)
-    {
-       /* ... */
-    }
-
-    cmdline_parse_token_string_t cmd_obj_action = TOKEN_STRING_INITIALIZER(struct cmd_obj_del_show_result, action, "show#del");
-
-    parse_token_obj_list_t cmd_obj_obj = TOKEN_OBJ_LIST_INITIALIZER(struct cmd_obj_del_show_result, obj, &global_obj_list);
-
-    cmdline_parse_inst_t cmd_obj_del_show = {
-        .f = cmd_obj_del_show_parsed, /* function to call */
-        .data = NULL,  /* 2nd arg of func */
-        .help_str = "Show/del an object",
-        .tokens = { /* token list, NULL terminated */
-            (void *)&cmd_obj_action,
-            (void *)&cmd_obj_obj,
-             NULL,
-        },
-    };
+.. literalinclude:: ../../../examples/cmdline/commands.c
+    :language: c
+    :start-after: Show or delete tokens. 8<
+    :end-before: >8 End of show or delete tokens.
 
 This command is composed of two tokens:
 

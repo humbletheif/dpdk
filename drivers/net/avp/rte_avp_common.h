@@ -8,7 +8,6 @@
 
 #ifdef __KERNEL__
 #include <linux/if.h>
-#define RTE_STD_C11
 #else
 #include <stdint.h>
 #include <rte_common.h>
@@ -69,21 +68,20 @@ struct rte_avp_device_config {
 	uint16_t num_tx_queues;	/**< Number of active transmit queues */
 	uint16_t num_rx_queues;	/**< Number of active receive queues */
 	uint8_t if_up; /**< 1: interface up, 0: interface down */
-} __attribute__ ((__packed__));
+} __rte_packed;
 
 /*
  * Structure for AVP request.
  */
 struct rte_avp_request {
 	uint32_t req_id; /**< Request id */
-	RTE_STD_C11
 	union {
 		uint32_t new_mtu; /**< New MTU */
 		uint8_t if_up;	/**< 1: interface up, 0: interface down */
 	struct rte_avp_device_config config; /**< Queue configuration */
 	};
 	int32_t result;	/**< Result for processing request */
-} __attribute__ ((__packed__));
+} __rte_packed;
 
 /*
  * FIFO struct mapped in a shared memory. It describes a circular buffer FIFO
@@ -102,7 +100,7 @@ struct rte_avp_fifo {
 /*
  * AVP packet buffer header used to define the exchange of packet data.
  */
-struct rte_avp_desc {
+struct __rte_cache_aligned rte_avp_desc {
 	uint64_t pad0;
 	void *pkt_mbuf; /**< Reference to packet mbuf */
 	uint8_t pad1[14];
@@ -116,7 +114,7 @@ struct rte_avp_desc {
 	uint32_t pad3;
 	uint16_t vlan_tci; /**< VLAN Tag Control Identifier (CPU order). */
 	uint32_t pad4;
-} __attribute__ ((__aligned__(RTE_CACHE_LINE_SIZE), __packed__));
+} __rte_packed;
 
 
 /**{ AVP device features */
@@ -345,7 +343,7 @@ struct rte_avp_device_info {
 	/* Ethernet info */
 	char ethaddr[ETH_ALEN];
 #else
-	char ethaddr[ETHER_ADDR_LEN];
+	char ethaddr[RTE_ETHER_ADDR_LEN];
 #endif
 
 	uint8_t mode; /**< device mode, i.e guest, host, trace */

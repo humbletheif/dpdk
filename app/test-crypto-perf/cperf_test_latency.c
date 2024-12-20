@@ -1,7 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2016-2017 Intel Corporation
  */
-
 #include <rte_malloc.h>
 #include <rte_cycles.h>
 #include <rte_crypto.h>
@@ -24,7 +23,8 @@ struct cperf_latency_ctx {
 
 	struct rte_mempool *pool;
 
-	struct rte_cryptodev_sym_session *sess;
+	void *sess;
+	uint8_t sess_owner;
 
 	cperf_populate_ops_t populate_ops;
 
@@ -40,33 +40,40 @@ struct priv_op_data {
 	struct cperf_op_result *result;
 };
 
-#define max(a, b) (a > b ? (uint64_t)a : (uint64_t)b)
-#define min(a, b) (a < b ? (uint64_t)a : (uint64_t)b)
-
 static void
 cperf_latency_test_free(struct cperf_latency_ctx *ctx)
 {
-	if (ctx) {
-		if (ctx->sess) {
-			rte_cryptodev_sym_session_clear(ctx->dev_id, ctx->sess);
-			rte_cryptodev_sym_session_free(ctx->sess);
+	if (ctx == NULL)
+		return;
+
+	if (ctx->sess != NULL && ctx->sess_owner) {
+		if (cperf_is_asym_test(ctx->options))
+			rte_cryptodev_asym_session_free(ctx->dev_id, ctx->sess);
+#ifdef RTE_LIB_SECURITY
+		else if (ctx->options->op_type == CPERF_PDCP ||
+			 ctx->options->op_type == CPERF_DOCSIS ||
+			 ctx->options->op_type == CPERF_TLS ||
+			 ctx->options->op_type == CPERF_IPSEC) {
+			void *sec_ctx = rte_cryptodev_get_sec_ctx(ctx->dev_id);
+			rte_security_session_destroy(sec_ctx, ctx->sess);
 		}
-
-		if (ctx->pool)
-			rte_mempool_free(ctx->pool);
-
-		rte_free(ctx->res);
-		rte_free(ctx);
+#endif
+		else
+			rte_cryptodev_sym_session_free(ctx->dev_id, ctx->sess);
 	}
+
+	rte_mempool_free(ctx->pool);
+	rte_free(ctx->res);
+	rte_free(ctx);
 }
 
 void *
 cperf_latency_test_constructor(struct rte_mempool *sess_mp,
-		struct rte_mempool *sess_priv_mp,
 		uint8_t dev_id, uint16_t qp_id,
 		const struct cperf_options *options,
 		const struct cperf_test_vector *test_vector,
-		const struct cperf_op_fns *op_fns)
+		const struct cperf_op_fns *op_fns,
+		void **sess)
 {
 	struct cperf_latency_ctx *ctx = NULL;
 	size_t extra_op_priv_size = sizeof(struct priv_op_data);
@@ -87,10 +94,18 @@ cperf_latency_test_constructor(struct rte_mempool *sess_mp,
 		sizeof(struct rte_crypto_sym_op) +
 		sizeof(struct cperf_op_result *);
 
-	ctx->sess = op_fns->sess_create(sess_mp, sess_priv_mp, dev_id, options,
-			test_vector, iv_offset);
-	if (ctx->sess == NULL)
-		goto err;
+
+	if (*sess != NULL) {
+		ctx->sess = *sess;
+		ctx->sess_owner = false;
+	} else {
+		ctx->sess = op_fns->sess_create(sess_mp, dev_id, options, test_vector,
+			iv_offset);
+		if (ctx->sess == NULL)
+			goto err;
+		*sess = ctx->sess;
+		ctx->sess_owner = true;
+	}
 
 	if (cperf_alloc_common_memory(options, test_vector, dev_id, qp_id,
 			extra_op_priv_size,
@@ -116,7 +131,11 @@ store_timestamp(struct rte_crypto_op *op, uint64_t timestamp)
 {
 	struct priv_op_data *priv_data;
 
-	priv_data = (struct priv_op_data *) (op->sym + 1);
+	if (op->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC)
+		priv_data = (struct priv_op_data *) (op->sym + 1);
+	else
+		priv_data = (struct priv_op_data *) (op->asym + 1);
+
 	priv_data->result->status = op->status;
 	priv_data->result->tsc_end = timestamp;
 }
@@ -128,8 +147,9 @@ cperf_latency_test_runner(void *arg)
 	uint16_t test_burst_size;
 	uint8_t burst_size_idx = 0;
 	uint32_t imix_idx = 0;
+	int ret = 0;
 
-	static int only_once;
+	static RTE_ATOMIC(uint16_t) display_once;
 
 	if (ctx == NULL)
 		return 0;
@@ -203,7 +223,14 @@ cperf_latency_test_runner(void *arg)
 					ctx->dst_buf_offset,
 					burst_size, ctx->sess, ctx->options,
 					ctx->test_vector, iv_offset,
-					&imix_idx);
+					&imix_idx, &tsc_start);
+
+			/* Populate the mbuf with the test vector */
+			if (!cperf_is_asym_test(ctx->options))
+				for (i = 0; i < burst_size; i++)
+					cperf_mbuf_set(ops[i]->sym->m_src,
+						ctx->options,
+						ctx->test_vector);
 
 			tsc_start = rte_rdtsc_precise();
 
@@ -238,29 +265,39 @@ cperf_latency_test_runner(void *arg)
 				ctx->res[tsc_idx].tsc_start = tsc_start;
 				/*
 				 * Private data structure starts after the end of the
-				 * rte_crypto_sym_op structure.
+				 * rte_crypto_sym_op (or rte_crypto_asym_op) structure.
 				 */
-				priv_data = (struct priv_op_data *) (ops[i]->sym + 1);
+				if (ops[i]->type == RTE_CRYPTO_OP_TYPE_SYMMETRIC)
+					priv_data = (struct priv_op_data *) (ops[i]->sym + 1);
+				else
+					priv_data = (struct priv_op_data *) (ops[i]->asym + 1);
+
 				priv_data->result = (void *)&ctx->res[tsc_idx];
 				tsc_idx++;
 			}
 
 			if (likely(ops_deqd))  {
-				/* Free crypto ops so they can be reused. */
-				for (i = 0; i < ops_deqd; i++)
-					store_timestamp(ops_processed[i], tsc_end);
+				for (i = 0; i < ops_deqd; i++) {
+					struct rte_crypto_op *op = ops_processed[i];
 
+					if (op->status != RTE_CRYPTO_OP_STATUS_SUCCESS)
+						ret = -1;
+
+					store_timestamp(ops_processed[i], tsc_end);
+				}
+
+				/* Free crypto ops so they can be reused. */
 				rte_mempool_put_bulk(ctx->pool,
 						(void **)ops_processed, ops_deqd);
 
 				deqd_tot += ops_deqd;
-				deqd_max = max(ops_deqd, deqd_max);
-				deqd_min = min(ops_deqd, deqd_min);
+				deqd_max = RTE_MAX(ops_deqd, deqd_max);
+				deqd_min = RTE_MIN(ops_deqd, deqd_min);
 			}
 
 			enqd_tot += ops_enqd;
-			enqd_max = max(ops_enqd, enqd_max);
-			enqd_min = min(ops_enqd, enqd_min);
+			enqd_max = RTE_MAX(ops_enqd, enqd_max);
+			enqd_min = RTE_MIN(ops_enqd, enqd_min);
 
 			b_idx++;
 		}
@@ -277,22 +314,32 @@ cperf_latency_test_runner(void *arg)
 			tsc_end = rte_rdtsc_precise();
 
 			if (ops_deqd != 0) {
-				for (i = 0; i < ops_deqd; i++)
+				for (i = 0; i < ops_deqd; i++) {
+					struct rte_crypto_op *op = ops_processed[i];
+
+					if (op->status != RTE_CRYPTO_OP_STATUS_SUCCESS)
+						ret = -1;
+
 					store_timestamp(ops_processed[i], tsc_end);
+				}
 
 				rte_mempool_put_bulk(ctx->pool,
 						(void **)ops_processed, ops_deqd);
 
 				deqd_tot += ops_deqd;
-				deqd_max = max(ops_deqd, deqd_max);
-				deqd_min = min(ops_deqd, deqd_min);
+				deqd_max = RTE_MAX(ops_deqd, deqd_max);
+				deqd_min = RTE_MIN(ops_deqd, deqd_min);
 			}
 		}
 
+		/* If there was any failure in crypto op, exit */
+		if (ret)
+			return ret;
+
 		for (i = 0; i < tsc_idx; i++) {
 			tsc_val = ctx->res[i].tsc_end - ctx->res[i].tsc_start;
-			tsc_max = max(tsc_val, tsc_max);
-			tsc_min = min(tsc_val, tsc_min);
+			tsc_max = RTE_MAX(tsc_val, tsc_max);
+			tsc_min = RTE_MIN(tsc_val, tsc_min);
 			tsc_tot += tsc_val;
 		}
 
@@ -310,14 +357,16 @@ cperf_latency_test_runner(void *arg)
 		time_max = tunit*(double)(tsc_max) / tsc_hz;
 		time_min = tunit*(double)(tsc_min) / tsc_hz;
 
+		uint16_t exp = 0;
 		if (ctx->options->csv) {
-			if (!only_once)
+			if (rte_atomic_compare_exchange_strong_explicit(&display_once, &exp, 1,
+					rte_memory_order_relaxed, rte_memory_order_relaxed))
 				printf("\n# lcore, Buffer Size, Burst Size, Pakt Seq #, "
-						"Packet Size, cycles, time (us)");
+						"cycles, time (us)");
 
 			for (i = 0; i < ctx->options->total_ops; i++) {
 
-				printf("\n%u;%u;%u;%"PRIu64";%"PRIu64";%.3f",
+				printf("\n%u,%u,%u,%"PRIu64",%"PRIu64",%.3f",
 					ctx->lcore_id, ctx->options->test_buffer_size,
 					test_burst_size, i + 1,
 					ctx->res[i].tsc_end - ctx->res[i].tsc_start,
@@ -326,7 +375,6 @@ cperf_latency_test_runner(void *arg)
 						/ tsc_hz);
 
 			}
-			only_once = 1;
 		} else {
 			printf("\n# Device %d on lcore %u\n", ctx->dev_id,
 				ctx->lcore_id);

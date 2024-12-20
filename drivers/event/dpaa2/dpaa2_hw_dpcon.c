@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2017 NXP
+ *   Copyright 2017, 2020, 2023 NXP
  *
  */
 
@@ -17,10 +17,10 @@
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
-#include <rte_ethdev_driver.h>
+#include <dev_driver.h>
+#include <ethdev_driver.h>
 
-#include <rte_fslmc.h>
+#include <bus_fslmc_driver.h>
 #include <mc/fsl_dpcon.h>
 #include <portal/dpaa2_hw_pvt.h>
 #include "dpaa2_eventdev.h"
@@ -30,14 +30,27 @@ TAILQ_HEAD(dpcon_dev_list, dpaa2_dpcon_dev);
 static struct dpcon_dev_list dpcon_dev_list
 	= TAILQ_HEAD_INITIALIZER(dpcon_dev_list); /*!< DPCON device list */
 
+static struct dpaa2_dpcon_dev *get_dpcon_from_id(uint32_t dpcon_id)
+{
+	struct dpaa2_dpcon_dev *dpcon_dev = NULL;
+
+	/* Get DPCONC dev handle from list using index */
+	TAILQ_FOREACH(dpcon_dev, &dpcon_dev_list, next) {
+		if (dpcon_dev->dpcon_id == dpcon_id)
+			break;
+	}
+
+	return dpcon_dev;
+}
+
 static int
 rte_dpaa2_create_dpcon_device(int dev_fd __rte_unused,
-			      struct vfio_device_info *obj_info __rte_unused,
-			      int dpcon_id)
+	struct vfio_device_info *obj_info __rte_unused,
+	struct rte_dpaa2_device *obj)
 {
 	struct dpaa2_dpcon_dev *dpcon_node;
 	struct dpcon_attr attr;
-	int ret;
+	int ret, dpcon_id = obj->object_id;
 
 	/* Allocate DPAA2 dpcon handle */
 	dpcon_node = rte_malloc(NULL, sizeof(struct dpaa2_dpcon_dev), 0);
@@ -48,7 +61,7 @@ rte_dpaa2_create_dpcon_device(int dev_fd __rte_unused,
 	}
 
 	/* Open the dpcon object */
-	dpcon_node->dpcon.regs = rte_mcp_ptr_list[MC_PORTAL_INDEX];
+	dpcon_node->dpcon.regs = dpaa2_get_mcp_ptr(MC_PORTAL_INDEX);
 	ret = dpcon_open(&dpcon_node->dpcon,
 			 CMD_PRI_LOW, dpcon_id, &dpcon_node->token);
 	if (ret) {
@@ -105,9 +118,26 @@ void rte_dpaa2_free_dpcon_dev(struct dpaa2_dpcon_dev *dpcon)
 	}
 }
 
+
+static void
+rte_dpaa2_close_dpcon_device(int object_id)
+{
+	struct dpaa2_dpcon_dev *dpcon_dev = NULL;
+
+	dpcon_dev = get_dpcon_from_id((uint32_t)object_id);
+
+	if (dpcon_dev) {
+		rte_dpaa2_free_dpcon_dev(dpcon_dev);
+		dpcon_close(&dpcon_dev->dpcon, CMD_PRI_LOW, dpcon_dev->token);
+		TAILQ_REMOVE(&dpcon_dev_list, dpcon_dev, next);
+		rte_free(dpcon_dev);
+	}
+}
+
 static struct rte_dpaa2_object rte_dpaa2_dpcon_obj = {
 	.dev_type = DPAA2_CON,
 	.create = rte_dpaa2_create_dpcon_device,
+	.close = rte_dpaa2_close_dpcon_device,
 };
 
 RTE_PMD_REGISTER_DPAA2_OBJECT(dpcon, rte_dpaa2_dpcon_obj);

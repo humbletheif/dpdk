@@ -11,15 +11,15 @@
 #include "hw_atl/hw_atl_utils.h"
 
 #define ATL_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_IPV6_EX | \
-	ETH_RSS_IPV6_TCP_EX | \
-	ETH_RSS_IPV6_UDP_EX)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_IPV6_EX | \
+	RTE_ETH_RSS_IPV6_TCP_EX | \
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 #define ATL_DEV_PRIVATE_TO_HW(adapter) \
 	(&((struct atl_adapter *)adapter)->hw)
@@ -34,7 +34,7 @@
 	(&((struct atl_adapter *)adapter)->hw_cfg)
 
 #define ATL_FLAG_NEED_LINK_UPDATE (uint32_t)(1 << 0)
-#define ATL_FLAG_NEED_LINK_CONFIG (uint32_t)(4 << 0)
+#define ATL_FLAG_MACSEC (uint32_t)(4 << 0)
 
 struct atl_interrupt {
 	uint32_t flags;
@@ -54,8 +54,8 @@ struct atl_adapter {
 /*
  * RX/TX function prototypes
  */
-void atl_rx_queue_release(void *rxq);
-void atl_tx_queue_release(void *txq);
+void atl_rx_queue_release(struct rte_eth_dev *dev, uint16_t rx_queue_id);
+void atl_tx_queue_release(struct rte_eth_dev *dev, uint16_t tx_queue_id);
 
 int atl_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -66,7 +66,7 @@ int atl_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf);
 
-uint32_t atl_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id);
+uint32_t atl_rx_queue_count(void *rx_queue);
 
 int atl_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int atl_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
@@ -103,5 +103,17 @@ uint16_t atl_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 uint16_t atl_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		uint16_t nb_pkts);
+
+int atl_macsec_enable(struct rte_eth_dev *dev, uint8_t encr, uint8_t repl_prot);
+int atl_macsec_disable(struct rte_eth_dev *dev);
+int atl_macsec_config_txsc(struct rte_eth_dev *dev, uint8_t *mac);
+int atl_macsec_config_rxsc(struct rte_eth_dev *dev,
+			   uint8_t *mac, uint16_t pi);
+int atl_macsec_select_txsa(struct rte_eth_dev *dev, uint8_t idx,
+			   uint8_t an, uint32_t pn, uint8_t *key);
+int atl_macsec_select_rxsa(struct rte_eth_dev *dev, uint8_t idx,
+			   uint8_t an, uint32_t pn, uint8_t *key);
+
+bool is_atlantic_supported(struct rte_eth_dev *dev);
 
 #endif /* _ATLANTIC_ETHDEV_H_ */
